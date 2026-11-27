@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
-import { appendFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteDurableSessionFiles,
+  DurableCleanupError,
   DurableSessionStore,
   MAX_STORAGE_SCAN_LIMIT,
   type DurableStorageBackendLoader
@@ -492,6 +493,67 @@ describe('DurableSessionStore', () => {
     expect(after.totalBytes()).toBe(after.lineageBytes(SUCCESSOR));
     await after.deleteLineages([SUCCESSOR]);
     expect(after.totalBytes()).toBe(0);
+  });
+
+  it('tolerates an unreadable store directory at start only while the durable runtime is off', async () => {
+    const parent = await stateDir();
+    const notADirectory = join(parent, 'agent-sessions');
+    await mkdir(parent, { recursive: true });
+    await writeFile(notADirectory, 'not a directory');
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const off = new DurableSessionStore({ stateDir: notADirectory, enabled: false });
+      stores.push(off);
+      await expect(off.measure()).resolves.toBeUndefined();
+      expect(off.totalBytes()).toBe(0);
+      expect(String(warn.mock.calls.at(-1)?.[0])).toContain('"code":"ENOTDIR"');
+    } finally {
+      warn.mockRestore();
+    }
+
+    const on = new DurableSessionStore({ stateDir: notADirectory, enabled: true });
+    stores.push(on);
+    await expect(on.measure()).rejects.toThrow(`durable session store directory ${notADirectory} is unreadable (ENOTDIR)`);
+
+    // Workspace cleanup at start finds no session files under a store path that is a file.
+    await expect(deleteDurableSessionFiles(notADirectory, LINEAGE)).resolves.toBeUndefined();
+    expect(existsSync(notADirectory)).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('skips one unreadable store while the engine is off and keeps counting the readable ones', async () => {
+    // A symlink loop lists like a store but fails to stat (ELOOP), as a store the runner may list
+    // but not read does (EACCES under a mode 0400 directory), and it does so even as root.
+    const dir = await stateDir();
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `${SUCCESSOR}.sqlite`), 'x'.repeat(64));
+    await symlink(`${LINEAGE}.sqlite`, join(dir, `${LINEAGE}.sqlite`));
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const off = new DurableSessionStore({ stateDir: dir, enabled: false });
+      stores.push(off);
+      await expect(off.measure()).resolves.toBeUndefined();
+      expect(off.lineageBytes(SUCCESSOR)).toBe(64);
+      expect(off.lineageBytes(LINEAGE)).toBe(0);
+      expect(String(warn.mock.calls.at(-1)?.[0])).toContain('"code":"ELOOP"');
+    } finally {
+      warn.mockRestore();
+    }
+
+    const on = new DurableSessionStore({ stateDir: dir, enabled: true });
+    stores.push(on);
+    const failure = await on.measure().then(() => undefined, (error: unknown) => error as Error);
+    expect(failure?.message).toBe(`durable session store ${join(dir, `${LINEAGE}.sqlite`)} is unreadable (ELOOP); fix its permissions, or turn the durable runtime off`);
+    expect((failure?.cause as NodeJS.ErrnoException | undefined)?.code).toBe('ELOOP');
+  });
+
+  it.skipIf(process.platform === 'win32')('reports a cleanup the filesystem refuses as a DurableCleanupError that names the path', async () => {
+    const parent = await stateDir();
+    await mkdir(parent, { recursive: true });
+    const loop = join(parent, 'agent-sessions');
+    await symlink(loop, loop);
+    const failure = await deleteDurableSessionFiles(loop, LINEAGE).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(DurableCleanupError);
+    expect(failure).toMatchObject({ code: 'ELOOP', path: loop, message: `durable session files under ${loop} could not be removed (ELOOP)` });
   });
 
   it.skipIf(process.platform === 'win32')('keeps the database and its directory private to the runner user', async () => {

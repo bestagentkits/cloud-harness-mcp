@@ -271,7 +271,7 @@ async function orphanedOwnerFiles(stateDir: string, lineageRootId: string): Prom
   try {
     names = await readdir(stateDir);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (isAbsentPath(error)) return [];
     throw error;
   }
   return names
@@ -286,15 +286,55 @@ async function orphanedOwnerFiles(stateDir: string, lineageRootId: string): Prom
  */
 export async function deleteDurableSessionFiles(stateDir: string, lineageRootId: string): Promise<void> {
   const paths = sessionPaths(stateDir, lineageRootId);
-  const temporaryOwners = await orphanedOwnerFiles(stateDir, lineageRootId);
-  await Promise.all([
-    rm(paths.database, { force: true }),
-    rm(`${paths.database}-wal`, { force: true }),
-    rm(`${paths.database}-shm`, { force: true }),
-    rm(`${paths.database}-journal`, { force: true }),
-    rm(paths.owner, { force: true }),
-    ...temporaryOwners.map((path) => rm(path, { force: true }))
-  ]);
+  try {
+    const temporaryOwners = await orphanedOwnerFiles(stateDir, lineageRootId);
+    await Promise.all([
+      paths.database,
+      `${paths.database}-wal`,
+      `${paths.database}-shm`,
+      `${paths.database}-journal`,
+      paths.owner,
+      ...temporaryOwners
+    ].map(removeIfPresent));
+  } catch (error) {
+    throw new DurableCleanupError(stateDir, error);
+  }
+}
+
+/**
+ * A filesystem failure while removing durable session files. The files may remain, so the caller
+ * keeps the records that name them and retries; startup reconciliation defers such a close
+ * instead of refusing to start.
+ */
+export class DurableCleanupError extends Error {
+  readonly code: string;
+  readonly path: string;
+
+  constructor(path: string, cause: unknown) {
+    const code = (cause as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+    super(`durable session files under ${path} could not be removed (${code})`, { cause });
+    this.name = 'DurableCleanupError';
+    this.code = code;
+    this.path = path;
+  }
+}
+
+/**
+ * Missing, or under a path component that is not a directory (a store path a state restore left
+ * as a file): either way no session file can exist there. Permission errors stay fatal, because
+ * files may really remain and the caller keeps its records to retry.
+ */
+function isAbsentPath(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+async function removeIfPresent(path: string): Promise<void> {
+  try {
+    await rm(path, { force: true });
+  } catch (error) {
+    if (!isAbsentPath(error)) throw error;
+  }
 }
 
 /** Removes the session files of every lineage a closed workspace owned. */
@@ -491,13 +531,32 @@ export class DurableSessionStore {
     try {
       names = await readdir(stateDir);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw error;
+      const code = (error as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+      if (code === 'ENOENT') return;
+      // With the durable engine off, an unreadable store (for example a file or a foreign-owned
+      // directory left by a state restore) must not stop the runner; its stores go uncounted.
+      if (!this.#enabled) {
+        process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'durable session store directory is unreadable; its stores are not counted toward the session budgets', path: stateDir, code })}\n`);
+        return;
+      }
+      throw new Error(`durable session store directory ${stateDir} is unreadable (${code}); fix its type or permissions, or turn the durable runtime off`, { cause: error });
     }
     for (const name of names) {
       const lineageRootId = name.endsWith('.sqlite') ? name.slice(0, -'.sqlite'.length) : '';
       if (!LINEAGE_ID.test(lineageRootId)) continue;
-      await this.#withLock(lineageRootId, async () => await this.#measureLineage(lineageRootId));
+      try {
+        await this.#withLock(lineageRootId, async () => await this.#measureLineage(lineageRootId));
+      } catch (error) {
+        // A listable directory can still deny reading one store (for example mode 0400). The
+        // readable stores stay counted; the unreadable one is skipped while the engine is off.
+        const path = (error as NodeJS.ErrnoException).path ?? join(stateDir, name);
+        const code = (error as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+        if (!this.#enabled) {
+          process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'durable session store is unreadable; it is not counted toward the session budgets', path, code })}\n`);
+          continue;
+        }
+        throw new Error(`durable session store ${path} is unreadable (${code}); fix its permissions, or turn the durable runtime off`, { cause: error });
+      }
     }
   }
 

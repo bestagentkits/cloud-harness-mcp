@@ -1,12 +1,13 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { ModelProfileIdSchema, RunnerAgentsConfigSchema, buildRepositoryGuidanceSnapshot, type RunnerOperation } from '@cloud-harness/contracts';
 import { createHash, randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../src/agent-manager.js';
+import { DurableCleanupError, DurableSessionStore } from '../src/durable-session-store.js';
 import { DockerAgentGatewayControl, type AgentGatewayControl, type AgentLeaseGrant, type AgentLeaseRevocation, type AgentLeaseSettlement } from '../src/agent-gateway-control.js';
 import * as dockerEngine from '../src/docker-engine.js';
 import type { AgentLaunchSpec, AgentLauncher, AgentRuntimeProcess } from '../src/agent-launcher.js';
@@ -1553,5 +1554,26 @@ describe('AgentManager persisted sessions', () => {
     await manager.stopWorkspace(record.ownerId, record.id, 'workspace closed');
     expect(repository.findSession(predecessorId)).toBeUndefined();
     expect((store.database.prepare('SELECT COUNT(*) AS count FROM agent_session_messages').get() as { count: number }).count).toBe(0);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps durable lineage and session rows when the filesystem refuses to remove their store, so a later close retries', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { manager, record, repository, store, launcher, gateway, toolExecutor, spendLedger } = context;
+    const predecessorId = await sealedPredecessor(context);
+    await manager.stop();
+    store.database.prepare("UPDATE agents SET runtime='pi-durable' WHERE id=?").run(predecessorId);
+    const lineageRoots = repository.durableLineageRoots(record.ownerId, record.id);
+    expect(lineageRoots).toHaveLength(1);
+
+    // A store path that fails every read (a symlink loop stands in for EACCES, even as root).
+    const loop = join(mkdtempSync(join(tmpdir(), 'agent-manager-loop-')), 'agent-sessions');
+    directories.push(dirname(loop));
+    symlinkSync(loop, loop);
+    const durableSessions = new DurableSessionStore({ stateDir: loop, enabled: false });
+    const restarted = new AgentManager(persistingConfig, store, { repository, launcher, gateway, toolExecutor, spendLedger, durableSessions });
+
+    await expect(restarted.stopWorkspace(record.ownerId, record.id, 'workspace closed')).rejects.toBeInstanceOf(DurableCleanupError);
+    expect(repository.durableLineageRoots(record.ownerId, record.id)).toEqual(lineageRoots);
+    expect(repository.findSession(predecessorId)).toMatchObject({ state: 'SEALED' });
   });
 });
