@@ -223,6 +223,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       clientSecret: secret('GITHUB_APP_CLIENT_SECRET') || undefined
     } : undefined,
     githubToken,
+    // Read only in cloudflare-access mode, so a stale value cannot fail startup in other modes.
+    accessIssuer: process.env.AUTH_MODE === 'cloudflare-access' ? process.env.CLOUDFLARE_ACCESS_ISSUER || undefined : undefined,
     cloudflareAccessOAuth: cloudflareAccessOAuth(),
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,

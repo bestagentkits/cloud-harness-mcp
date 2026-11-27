@@ -1,8 +1,17 @@
 import type { Response } from 'express';
-import { OAuthGrantSettingsViewSchema, type RunnerResponse } from '@cloud-harness/contracts';
+import { OAuthClientRegistrationResultSchema, OAuthGrantSettingsViewSchema, type RunnerResponse } from '@cloud-harness/contracts';
+import type { z } from 'zod';
 
-/** Operations whose answer is the inbound OAuth settings view; it reaches the browser only when it matches the strict schema. */
-const oauthViewOperations = new Set<string>(['oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update']);
+/**
+ * Operations whose answer reaches the browser only when it matches a strict schema: the inbound
+ * OAuth settings view, and the one-time OAuth client registration (which carries a client secret).
+ */
+const strictOperations: Record<string, { schema: z.ZodType; unexpected: string }> = {
+  oauth_settings_get: { schema: OAuthGrantSettingsViewSchema, unexpected: 'OAuth session settings returned an unexpected answer, so nothing is shown. Reload to try again.' },
+  oauth_settings_update: { schema: OAuthGrantSettingsViewSchema, unexpected: 'OAuth session settings returned an unexpected answer, so nothing is shown. Reload to try again.' },
+  oauth_redirect_uris_update: { schema: OAuthGrantSettingsViewSchema, unexpected: 'OAuth session settings returned an unexpected answer, so nothing is shown. Reload to try again.' },
+  oauth_client_register: { schema: OAuthClientRegistrationResultSchema, unexpected: 'The client registration returned an unexpected answer, so no credentials are shown. Try again.' }
+};
 
 const statuses: Record<string, number> = {
   AUTHENTICATION_FAILED: 401, FORBIDDEN: 404, INVALID_INPUT: 400, NOT_FOUND: 404,
@@ -215,7 +224,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'toolkits_list',
   'toolkits_preview',
   'settings_get', 'settings_update', 'settings_network_check',
-  'oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update',
+  'oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update', 'oauth_client_register',
   'files_list',
   'files_read',
   'files_write',
@@ -669,7 +678,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
 const descriptiveOperations = new Set<string>([
   // The runner composes plain-language, credential-free provider messages for these
   // (missing permission, concurrent edit, unconfirmed read-back).
-  'oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update',
+  'oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update', 'oauth_client_register',
   'secret_create', 'secret_rotate', 'secret_update', 'secret_delete', 'secret_bulk_apply',
   'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'project_create', 'project_update', 'project_delete',
@@ -1043,13 +1052,14 @@ export function sendRunnerResponse(response: Response, operation: DashboardRespo
     response.status(status).json({ error: code.toLowerCase(), message });
     return;
   }
-  if (oauthViewOperations.has(operation)) {
-    const view = OAuthGrantSettingsViewSchema.safeParse(result.data);
-    if (!view.success) {
-      response.status(502).json({ error: 'unavailable', message: 'OAuth session settings returned an unexpected answer, so nothing is shown. Reload to try again.' });
+  const strict = strictOperations[operation];
+  if (strict) {
+    const parsed = strict.schema.safeParse(result.data);
+    if (!parsed.success) {
+      response.status(502).json({ error: 'unavailable', message: strict.unexpected });
       return;
     }
-    response.json({ data: view.data, truncated: result.truncated });
+    response.json({ data: parsed.data, truncated: result.truncated });
     return;
   }
   response.json({ data: mapDashboardData(operation, result.data), truncated: result.truncated, ...(result.cursor ? { cursor: result.cursor } : {}) });

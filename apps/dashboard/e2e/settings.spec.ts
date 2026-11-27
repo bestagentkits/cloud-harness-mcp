@@ -248,6 +248,44 @@ test('OAuth: reloading from the provider drops an unsaved redirect URI draft eve
   await expect(field).toHaveValue(claude);
 });
 
+test('OAuth: Connect Gemini creates a client and shows its credentials once, never storing them', async ({ page }) => {
+  // The first create is refused by design (400), which the browser reports as a failed resource load.
+  const problems = watchConsole(page, { allow: [/status of 400/] });
+  const redirectUri = 'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc123';
+  const secret = 'gemini-client-secret-value';
+  await openSettings(page);
+  let answered = 0;
+  const writes = await stubWrite(page, '/settings/oauth/clients', () => (answered++ === 0
+    ? { status: 400, body: { error: 'invalid_input', message: 'This redirect URI is not on the Allowed redirect URIs list. Tick "Gemini custom apps" under Allowed redirect URIs and save, then try again.' } }
+    : { status: 200, body: { data: { client: 'gemini', clientId: 'client-123', clientSecret: secret, clientName: 'Gemini custom app (Cloud Harness Dashboard)', redirectUri, tokenEndpointAuthMethod: 'client_secret_post' }, truncated: false } }));
+  const field = page.getByLabel('Gemini redirect URI');
+  await field.fill('https://example.com/r/nope');
+  await page.getByTestId('create-gemini-client').click();
+  await expect(main(page)).toContainText('Paste the redirect URI from Gemini');
+  expect(writes).toHaveLength(0);
+
+  await field.fill(redirectUri);
+  await page.getByTestId('create-gemini-client').click();
+  // The runner's remedy reaches the operator unchanged.
+  await expect(page.getByTestId('oauth-status')).toHaveText(/Tick "Gemini custom apps" under Allowed redirect URIs/);
+  await expect(page.getByTestId('gemini-client-reveal-dialog')).toHaveCount(0);
+  // Enter in the field submits like the button.
+  await field.press('Enter');
+  const dialog = page.getByTestId('gemini-client-reveal-dialog');
+  await expect(dialog.getByLabel('OAuth client ID')).toHaveValue('client-123');
+  await expect(dialog.getByLabel('OAuth client secret')).toHaveValue(secret);
+  await expect(field).toHaveValue('');
+  const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }));
+  expect(stored).not.toContain(secret);
+  await dialog.getByRole('button', { name: 'I have saved them' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(main(page)).not.toContainText(secret);
+
+  expect(writes.map((write) => write.body)).toEqual([{ client: 'gemini', redirectUri }, { client: 'gemini', redirectUri }]);
+  expect(writes[0]?.csrf).toBe(true);
+  expect(problems).toEqual([]);
+});
+
 test('OAuth: a read-only provider shows facts and the reason without a form', async ({ page }) => {
   await openSettings(page, { '/settings/oauth': answer(200, oauthBody({ capabilities: { ...oauthBody().data.capabilities, canWriteGrantConfiguration: false }, readOnlyReason: 'The Cloudflare API token cannot update this Access application.' })) });
   await expect(main(page)).toContainText('cannot update this Access application');

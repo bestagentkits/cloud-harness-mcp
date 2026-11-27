@@ -144,6 +144,10 @@ beforeEach(async () => {
         }
         return { ok: true, message: 'Inbound OAuth session settings', truncated: false, data: OAUTH_VIEW };
       }
+      if (operation === 'oauth_client_register') {
+        const result = { client: 'gemini', clientId: 'client-1', clientSecret: 'secret-1', clientName: 'Gemini custom app (Cloud Harness Dashboard)', redirectUri: input.redirectUri, tokenEndpointAuthMethod: 'client_secret_post' };
+        return { ok: true, message: 'OAuth client registered', truncated: false, data: String(input.redirectUri).endsWith('/leak') ? { ...result, registrationAccessToken: 'cf-secret' } : result };
+      }
       return { ok: true, message: 'detail', truncated: false, data: {
         workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkProfile: 'network-none', generation: 7,
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z'
@@ -949,6 +953,37 @@ describe('dashboard BFF', () => {
     const before = calls.length;
     for (const invalid of [{ ...body, apiToken: 'leak' }, { uris: body.uris }, { ...body, uris: 'https://client.example/cb' }]) {
       const rejected = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify(invalid) });
+      expect(rejected.status, JSON.stringify(invalid)).toBe(400);
+    }
+    expect(calls.length).toBe(before);
+  });
+
+  it('proxies Gemini client registration with CSRF, projects the answer strictly, and refuses malformed bodies before the runner', async () => {
+    const redirectUri = 'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc123';
+    const body = { client: 'gemini', redirectUri };
+    const unauthenticated = await send('/api/v1/settings/oauth/clients', { method: 'POST', headers: { origin: 'https://dashboard.example', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect(unauthenticated.status).toBe(401);
+    expect(calls.some((call) => call.operation === 'oauth_client_register')).toBe(false);
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const created = await send('/api/v1/settings/oauth/clients', { method: 'POST', headers, body: JSON.stringify(body) });
+    expect(created.status).toBe(200);
+    expect(created.headers['cache-control']).toBe('no-store');
+    expect(calls.at(-1)).toEqual({ operation: 'oauth_client_register', input: body, principal });
+    // The browser's disconnect reaches the runner, so a tab closed during discovery cancels the registration.
+    expect(vi.mocked(runner.callInternal!).mock.calls.at(-1)?.[3]).toBeInstanceOf(AbortSignal);
+    expect(created.json.data).toMatchObject({ clientId: 'client-1', clientSecret: 'secret-1', redirectUri });
+
+    // An answer outside the strict result schema never reaches the browser.
+    const leaked = await send('/api/v1/settings/oauth/clients', { method: 'POST', headers, body: JSON.stringify({ client: 'gemini', redirectUri: 'https://oauth-redirect.googleusercontent.com/r/leak' }) });
+    expect(leaked.status).toBe(502);
+    expect(JSON.stringify(leaked.json)).not.toMatch(/cf-secret|secret-1/);
+
+    const before = calls.length;
+    for (const invalid of [{ ...body, extra: 1 }, { client: 'chatgpt', redirectUri }, { client: 'gemini', redirectUri: 'https://evil.example/r/x' }, { client: 'gemini' }]) {
+      const rejected = await send('/api/v1/settings/oauth/clients', { method: 'POST', headers, body: JSON.stringify(invalid) });
       expect(rejected.status, JSON.stringify(invalid)).toBe(400);
     }
     expect(calls.length).toBe(before);

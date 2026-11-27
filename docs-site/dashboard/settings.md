@@ -101,6 +101,10 @@ An MCP client registers itself with the Access application before its first sign
 
 The panel also shows whether dynamic client registration is on and whether Cloudflare accepts any `localhost` or `127.0.0.1` callback. It does not change those two settings. If the list in Cloudflare cannot be read, holds more than 128 entries, or contains an entry with a query string, credentials, or a fragment, the panel hides the list, explains why, and leaves editing to Cloudflare Zero Trust. Saves follow the same rules as the grant settings above: they need a read-write integration, a save is refused if the configuration changed after the page loaded, and each save is recorded in the [Audit log](/dashboard/audit) as `settings.oauth_redirect_uris.changed` with the URIs it added and removed.
 
+### Connect Gemini
+
+The Gemini web app may fail to register itself and ask for an OAuth client ID and secret. **Connect Gemini**, below the allowlist, creates them: paste the redirect URI from Gemini's **Copy redirect URI** and click **Create Gemini client**. A dialog shows the client ID and secret once, with copy buttons; Cloud Harness does not keep the secret, so if you lose it, create another client. Allow Gemini's callback first: tick **Gemini custom apps** under Allowed redirect URIs, or add `https://oauth-redirect.googleusercontent.com/r/*` in Cloudflare Zero Trust. When the provider integration can read the allowlist, the panel refuses a callback that is not on it. Each Google account has its own redirect URI, so each Gemini user creates their own client. Clients are recorded in the [Audit log](/dashboard/audit) as `oauth_client.registered` with the client ID only. The full Gemini setup is in [Gemini](/ai-tools/gemini).
+
 ## TypeSafe integration
 
 The last panel stores your write-only TypeSafe API key and shows whether it is configured, whether the operator left TypeSafe egress on, and the endpoint and model in use. The key is per owner, unlike the instance-wide values above. See [TypeSafe Integration](/dashboard/typesafe).

@@ -52,7 +52,7 @@ import {
   launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, githubRefusalMessage, GITHUB_USER_AUTHORIZATION_REQUIRED_CODE, GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
   renderChangelog, renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
-  parseRedirectUriLines, redirectPresetState, toggleRedirectPreset,
+  parseRedirectUriLines, redirectPresetState, toggleRedirectPreset, GEMINI_REDIRECT_URI_PATTERN,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
@@ -1540,7 +1540,15 @@ export function initializeDashboard() {
     loadQueue = queued;
     return queued;
   }
+  // The Connect Gemini panel's one-time credentials live only in its two inputs. Every
+  // navigation, Settings re-render, dismiss, and pagehide wipes them and bumps the
+  // generation, so a registration answer that arrives afterwards is never shown.
+  let geminiGeneration = 0;
+  let wipeGeminiInputs = () => {};
+  const clearGeminiCredentials = () => { geminiGeneration += 1; wipeGeminiInputs(); };
+  globalThis.addEventListener('pagehide', clearGeminiCredentials);
   async function performLoad(signal) {
+    clearGeminiCredentials();
     alertBox.hidden = true; setBusy(true);
     try {
       const pathname = location.pathname;
@@ -2741,11 +2749,13 @@ export function initializeDashboard() {
     renderSettingsView();
   }
   function renderSettingsView() {
+    clearGeminiCredentials();
     insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth, settingsTypesafe));
     bindSettingsControls();
     bindLifecycleSettingsControls();
     bindOAuthSettingsControls();
     bindOAuthRedirectControls();
+    bindGeminiClientControls();
     bindTypesafeSettingsControls();
   }
   function typesafeStatus(message) {
@@ -2931,6 +2941,52 @@ export function initializeDashboard() {
         pendingLabel: 'Saving…',
         action: () => postOAuthRedirects(body)
       }, button);
+    });
+  }
+  /**
+   * Creates a Gemini OAuth client and shows its ID and secret once, through DOM properties
+   * only. Dismissing, leaving the page, or any re-render of Settings drops them.
+   */
+  function bindGeminiClientControls() {
+    const form = document.querySelector('#settings-oauth-gemini-form');
+    const result = document.querySelector('#settings-oauth-gemini-result');
+    if (!form || !result) return;
+    const field = form.querySelector('#settings-oauth-gemini-uri');
+    const idField = result.querySelector('#settings-oauth-gemini-id');
+    const secretField = result.querySelector('#settings-oauth-gemini-secret');
+    wipeGeminiInputs = () => { idField.value = ''; secretField.value = ''; result.hidden = true; };
+    const clear = clearGeminiCredentials;
+    const copy = (input, label) => {
+      const failed = () => { clear(); oauthStatus(`The ${label.toLowerCase()} could not be copied, so the credentials were cleared. Create another client.`); };
+      // Without the Clipboard API (insecure context, old browser) the failure branch still clears the secret.
+      if (!globalThis.navigator.clipboard?.writeText) { failed(); return; }
+      void globalThis.navigator.clipboard.writeText(input.value).then(() => oauthStatus(`${label} copied.`), failed);
+    };
+    result.querySelector('#copy-settings-oauth-gemini-id').addEventListener('click', () => copy(idField, 'Client ID'));
+    result.querySelector('#copy-settings-oauth-gemini-secret').addEventListener('click', () => copy(secretField, 'Client secret'));
+    result.querySelector('#dismiss-settings-oauth-gemini').addEventListener('click', () => { clear(); oauthStatus('Credentials cleared from this page.'); });
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const redirectUri = field.value.trim();
+      if (!GEMINI_REDIRECT_URI_PATTERN.test(redirectUri)) {
+        oauthStatus('Paste the redirect URI from Gemini: https://oauth-redirect.googleusercontent.com/r/…');
+        field.focus();
+        return;
+      }
+      const generation = geminiGeneration;
+      void oauthAction(form.querySelector('#create-settings-oauth-gemini'), 'Creating…', async () => {
+        const { data } = await api('/settings/oauth/clients', { method: 'POST', body: requestBody({ client: 'gemini', redirectUri }) });
+        // Navigation, a re-render, or a dismiss since the request started: drop the answer.
+        if (generation !== geminiGeneration || !secretField.isConnected) return;
+        if (typeof data?.clientId !== 'string' || typeof data?.clientSecret !== 'string' || data?.redirectUri !== redirectUri) {
+          throw new Error('The new client credentials were unavailable. Create another client.');
+        }
+        field.value = '';
+        idField.value = data.clientId;
+        secretField.value = data.clientSecret;
+        result.hidden = false;
+        oauthStatus('Gemini client created. Copy its ID and secret now.');
+      });
     });
   }
   function lifecycleStatus(message) {

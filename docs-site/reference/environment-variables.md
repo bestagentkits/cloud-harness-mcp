@@ -24,7 +24,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `OIDC_AUDIENCE` | `https://your-instance.example.com` | Optional | oidc mode only: this instance's canonical URL; a token's aud must contain it exactly. |
 | `OIDC_JWKS_URL` | `https://issuer.example.com/.well-known/jwks.json` | Optional | oidc mode only: the issuer's JWKS endpoint for RS256 signing keys. |
 | `OIDC_REQUIRED_SCOPE` | `cloudharness:operator` | Optional | oidc mode only: scope the token's scope claim must contain. |
-| `CLOUDFLARE_ACCESS_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |
+| `CLOUDFLARE_ACCESS_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | cloudflare-access mode: the Access team domain. The API verifies Access assertions against it; the runner also uses it to register Gemini OAuth clients from Dashboard Settings. |
 | `CLOUDFLARE_ACCESS_AUDIENCE` | `—` | Optional | Optional configuration. |
 | `CLOUDFLARE_ACCESS_JWKS_URL` | `https://your-team.cloudflareaccess.com/cdn-cgi/access/certs` | Optional | Optional configuration. |
 | `API_KEY_AUTH_ENABLED` | `false` | Optional | Optional managed API-key lane. Enable all four together only in cloudflare-access mode. The gateway audience belongs to a separate Access application scoped to the /mcp-api-key path (its /mcp-api-key/gateway subpath included). |

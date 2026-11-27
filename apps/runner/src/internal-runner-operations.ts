@@ -9,9 +9,11 @@ import {
 import type { WorkspaceService } from './workspace-service.js';
 import type { DashboardControlService } from './dashboard-control-service.js';
 import type { OAuthGrantSettingsService } from './oauth-grant-settings-service.js';
+import type { OAuthClientRegistrar } from './oauth-client-registrar.js';
 
 export type OAuthSettingsOperations = {
   settings: OAuthGrantSettingsService;
+  clients?: OAuthClientRegistrar;
   resolvePrincipal(principal: InternalRunnerRequest['principal']): string;
 };
 
@@ -37,6 +39,11 @@ export async function executeInternalRunnerOperation(
         ? await oauth.settings.update(ownerId, parsed.input)
         : await oauth.settings.updateRedirectUris(ownerId, parsed.input);
     return { ok: true, message: 'Inbound OAuth session settings', data, truncated: false };
+  }
+  if (parsed.operation === 'oauth_client_register') {
+    if (!oauth?.clients) throw new HarnessError('UNAVAILABLE', 'OAuth client registration is unavailable', 503, true);
+    const data = await oauth.clients.register(oauth.resolvePrincipal(parsed.principal), parsed.input, signal);
+    return { ok: true, message: 'OAuth client registered', data, truncated: false };
   }
   return await service.executeInternal(parsed.principal, parsed.operation, parsed.input, signal);
 }

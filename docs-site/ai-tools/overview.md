@@ -16,6 +16,7 @@ Cloud Harness MCP is compatible with all leading AI agent environments, IDEs, an
 | **Claude Code** | Static API Key | `https://api.harness.zuey.me/mcp` | `claude mcp add` / env var |
 | **Cursor IDE** | Static API Key | `https://api.harness.zuey.me/mcp` | Settings → Features → MCP |
 | **OpenAI Codex** | Managed OAuth (recommended) or Static API Key | `https://harness.zuey.me/mcp` (OAuth) or `https://api.harness.zuey.me/mcp` (key) | `~/.codex/config.toml` |
+| **Gemini (web app)** | Managed OAuth | `https://harness.zuey.me/mcp` | Custom connected apps; may need a [registered client](/ai-tools/gemini#_3-if-gemini-asks-for-a-client-id-and-secret) |
 | **Gemini CLI** | Static API Key | `https://api.harness.zuey.me/mcp` | Environment header / CLI flags |
 | **Google Antigravity** | Static API Key | `https://api.harness.zuey.me/mcp` | Antigravity MCP Settings |
 | **Grok / xAI** | Static API Key | `https://api.harness.zuey.me/mcp` | Responses API tool definitions |

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { oauthDurationLabel, parseRedirectUriLines, redirectPresetState, renderOAuthSettings, renderSettings, toggleRedirectPreset } from '../dashboard/dashboard-render.js';
+import { GEMINI_REDIRECT_URI_PATTERN, oauthDurationLabel, parseRedirectUriLines, redirectPresetState, renderOAuthSettings, renderSettings, toggleRedirectPreset } from '../dashboard/dashboard-render.js';
 
 const capabilities = {
   canReadGrantConfiguration: true,
@@ -111,7 +111,7 @@ describe('Dashboard MCP OAuth session settings', () => {
     const readOnly = renderOAuthSettings(view({ redirectUris: redirectUris({ canWrite: false }) }));
     expect(readOnly).toContain('<li class="mono">https://claude.ai/api/mcp/auth_callback</li>');
     expect(readOnly).not.toContain('id="save-settings-oauth-redirects"');
-    expect(renderOAuthSettings(view({ provider: { id: 'none', label: 'Not configured' }, redirectUris: redirectUris() }))).not.toContain('Allowed redirect URIs');
+    expect(renderOAuthSettings(view({ provider: { id: 'none', label: 'Not configured' }, redirectUris: redirectUris() }))).not.toContain('id="settings-oauth-redirects-heading"');
   });
 
   it('applies presets to the one-per-line list the way the controller does', () => {
@@ -121,5 +121,14 @@ describe('Dashboard MCP OAuth session settings', () => {
     expect(withGemini).toEqual(['https://a.example/cb', 'https://oauth-redirect.googleusercontent.com/r/*']);
     expect(redirectPresetState(gemini, withGemini)).toBe('on');
     expect(toggleRedirectPreset(withGemini, gemini, false)).toEqual(['https://a.example/cb']);
+  });
+
+  it('renders the Connect Gemini form with an empty, hidden result area', () => {
+    const html = renderOAuthSettings(view());
+    expect(html).toContain('id="settings-oauth-gemini-form"');
+    expect(html).toMatch(/<div id="settings-oauth-gemini-result" hidden>/);
+    expect(html).toMatch(/id="settings-oauth-gemini-secret" class="mono" type="text" readonly autocomplete="off" spellcheck="false">/);
+    expect(GEMINI_REDIRECT_URI_PATTERN.test('https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc')).toBe(true);
+    expect(GEMINI_REDIRECT_URI_PATTERN.test('https://oauth-redirect.googleusercontent.com/r/x?y=1')).toBe(false);
   });
 });

@@ -117,7 +117,7 @@ export default defineConfig({
           { text: 'Claude Code', link: '/ai-tools/claude-code' },
           { text: 'Cursor', link: '/ai-tools/cursor' },
           { text: 'Codex', link: '/ai-tools/codex' },
-          { text: 'Gemini CLI', link: '/ai-tools/gemini' },
+          { text: 'Gemini (web and CLI)', link: '/ai-tools/gemini' },
           { text: 'Google Antigravity', link: '/ai-tools/antigravity' },
           { text: 'Grok / xAI', link: '/ai-tools/grok' }
         ]

@@ -21,6 +21,8 @@ import { DockerAgentGatewayControl } from './agent-gateway-control.js';
 import { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import { CloudflareAccessOAuthProvider } from './cloudflare-access-oauth-provider.js';
 import { OAuthGrantSettingsService } from './oauth-grant-settings-service.js';
+import { OAuthClientRegistrar } from './oauth-client-registrar.js';
+import { isCloudflareAccess } from '@cloud-harness/contracts';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const loaded = loadRunnerConfigWithReadiness();
@@ -97,10 +99,16 @@ controls.useDiagnosticLog((record) => logger.warn(record, 'skill library operati
 // A job row outlives the process that wrote it, so startup is where an import interrupted by a restart is
 // turned into a terminal state rather than left as a spinner that never ends.
 controls.reconcileInterruptedImports();
+const oauthProvider = config.cloudflareAccessOAuth ? new CloudflareAccessOAuthProvider(config.cloudflareAccessOAuth) : undefined;
 const oauthGrantSettings = new OAuthGrantSettingsService(
   store,
-  config.cloudflareAccessOAuth ? new CloudflareAccessOAuthProvider(config.cloudflareAccessOAuth) : undefined,
+  oauthProvider,
   (ownerId, action, details) => metadata.recordAudit(ownerId, action, 'instance', 'oauth_grant_settings', 1, details)
+);
+const oauthClients = new OAuthClientRegistrar(
+  isCloudflareAccess(config.authMode) ? config.accessIssuer : undefined,
+  oauthProvider ? async () => (await oauthProvider.read()).redirectUris : undefined,
+  (ownerId, action, details) => metadata.recordAudit(ownerId, action, 'instance', 'oauth_client', 1, details)
 );
 await service.start();
 // New installs default to the provider-maximum grant. This never blocks startup and
@@ -111,6 +119,7 @@ void oauthGrantSettings.reconcileDefault().then(
 );
 const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
   settings: oauthGrantSettings,
+  clients: oauthClients,
   resolvePrincipal: (principal) => store.resolvePrincipal(principal)
 }, events));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));

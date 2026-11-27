@@ -17,6 +17,7 @@ import {
   type OAuthUpdate, oauthUpdateInput, type OAuthValues, type OAuthView, readOAuthView, tokenFact
 } from './oauth-model';
 import { RedirectUrisPanel } from './oauth-redirect-section';
+import { GeminiClientSection } from './gemini-client-section';
 import { readRedirectUris } from './oauth-redirect-model';
 import { Callout, SectionRead, StatusLine } from './settings-feedback';
 import { oauthRead, useConflictReload, useOAuthWrite } from './settings-queries';
@@ -176,6 +177,7 @@ export function OAuthSection() {
               {redirect && view.provider.id !== 'none'
                 ? <RedirectUrisPanel key={`${view.revision ?? 'none'}:${reloads}`} view={redirect} revision={view.revision} onStatus={setStatus} />
                 : null}
+              <GeminiClientSection onStatus={setStatus} />
             </>
           );
         }}

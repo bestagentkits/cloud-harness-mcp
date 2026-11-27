@@ -499,6 +499,12 @@ export const RunnerConfigSchema = z.object({
    */
   githubToken: z.string().min(1).max(512).optional(),
   /**
+   * The Cloudflare Access team domain (`CLOUDFLARE_ACCESS_ISSUER`, shared with
+   * the API). The runner uses it only to register Dashboard-created OAuth clients
+   * at the Managed OAuth registration endpoint; it is not a credential.
+   */
+  accessIssuer: httpsUrl.optional(),
+  /**
    * Optional control-plane integration with Cloudflare Access Managed OAuth,
    * used to read and (with `read-write`) update the inbound MCP OAuth grant
    * session duration and access-token lifetime of one Access application. The
