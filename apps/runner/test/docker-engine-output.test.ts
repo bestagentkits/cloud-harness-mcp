@@ -33,10 +33,12 @@ describe('runDocker output capture', () => {
   });
 
   it('stops the process and reports truncation once a stream exceeds the byte cap', async () => {
-    fakeDocker('head -c 5000 /dev/zero | tr "\\0" a; sleep 5; echo never');
+    // One process owns the pipe and writes until it is killed: no child outlives the kill and holds the pipe
+    // open, so the test finishes only if runDocker stops the process at the cap.
+    fakeDocker('exec yes a');
     const result = await runDocker(['run'], { maxBytes: 1_024 });
     expect(result.truncated).toBe(true);
-    expect(result.stdout).toBe('a'.repeat(1_024));
+    expect(result.stdout).toBe('a\n'.repeat(512));
     expect(result.exitCode).not.toBe(0);
   });
 });
