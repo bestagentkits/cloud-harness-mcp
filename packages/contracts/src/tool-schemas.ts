@@ -177,13 +177,26 @@ const githubRevision = z.string().min(1).max(255).refine((value) =>
   /^[A-Za-z0-9._/-]+$/.test(value) && !value.startsWith('-') && !value.startsWith('/') && !value.includes('..') && !value.endsWith('/'),
 'revision must be a branch, tag, or commit SHA without range syntax');
 const githubHistoryPath = relativePath.refine((value) => !value.includes('?') && !value.includes('#'), 'path cannot contain query or fragment characters');
+// A repository entry read by file_read. It travels as a GraphQL variable, so any character a Git path holds
+// is allowed; only empty, ".", and ".." segments are refused.
+const githubContentPath = relativePath.refine(
+  (value) => !value.includes('\\') && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..'),
+  'path must name a repository entry without empty, ".", or ".." segments'
+);
+// An opaque continuation token returned by pr_diff or file_read; the runner validates its content.
+const githubReadCursor = z.string().min(1).max(512).regex(/^[A-Za-z0-9_-]+$/, 'cursor must be a value returned by a previous call');
 const isoInstant = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);
 
-/** Read-only GitHub actions: they never mutate the repository or its issues and pull requests. */
-export const GITHUB_READ_ACTIONS = [
+/**
+ * Read-only GitHub actions that github_action also still accepts for compatibility. They never mutate the
+ * repository or its issues and pull requests.
+ */
+export const GITHUB_ACTION_READ_ACTIONS = [
   'pr_list', 'pr_view', 'pr_review_threads', 'pr_reviews', 'issue_list', 'issue_view', 'commit_list', 'compare', 'release_list', 'tag_list',
   'ref_get', 'commit_status_get', 'check_runs_list', 'workflow_runs_list', 'workflow_run_view'
 ] as const;
+/** Every read-only GitHub action the github_read tool serves; the newer ones exist only there. */
+export const GITHUB_READ_ACTIONS = [...GITHUB_ACTION_READ_ACTIONS, 'pr_diff', 'file_read'] as const;
 /** Mutating GitHub actions that stay on the destructive-annotated github_action tool. */
 export const GITHUB_WRITE_ACTIONS = [
   'pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update',
@@ -322,6 +335,23 @@ const githubReadActionSchemas = [
     action: z.literal('workflow_run_view'),
     runId: workflowRunId,
     limit: z.number().int().min(1).max(100).default(100)
+  })
+] as const;
+
+// Served only by github_read, so the destructive-annotated github_action never gains another read path.
+const githubReadToolOnlyActionSchemas = [
+  z.object({
+    ...workspace,
+    action: z.literal('pr_diff'),
+    prNumber: z.number().int().positive(),
+    cursor: githubReadCursor.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('file_read'),
+    path: githubContentPath,
+    sha: githubRevision,
+    cursor: githubReadCursor.optional()
   })
 ] as const;
 
@@ -589,7 +619,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   })
 ]);
 
-const githubReadUnion = z.discriminatedUnion('action', [...githubReadActionSchemas]);
+const githubReadUnion = z.discriminatedUnion('action', [...githubReadActionSchemas, ...githubReadToolOnlyActionSchemas]);
 
 const githubReadInput = z.object({
   ...workspace,
@@ -599,7 +629,8 @@ const githubReadInput = z.object({
   prNumber: z.number().int().positive().optional(),
   issueNumber: z.number().int().positive().optional(),
   sha: githubRevision.optional(),
-  path: githubHistoryPath.optional(),
+  // Each action's own schema below narrows the path; commit_list keeps refusing query and fragment characters.
+  path: relativePath.optional(),
   since: isoInstant.optional(),
   until: isoInstant.optional(),
   base: githubRevision.optional(),
@@ -611,12 +642,13 @@ const githubReadInput = z.object({
   branch: githubRevision.optional(),
   event: workflowEvent.optional(),
   status: workflowRunStatus.optional(),
-  runId: workflowRunId.optional()
+  runId: workflowRunId.optional(),
+  cursor: githubReadCursor.optional()
 });
 
 const githubActionInput = z.object({
   ...workspace,
-  action: z.enum([...GITHUB_READ_ACTIONS, ...GITHUB_WRITE_ACTIONS]),
+  action: z.enum([...GITHUB_ACTION_READ_ACTIONS, ...GITHUB_WRITE_ACTIONS]),
   limit: z.number().int().min(1).max(250).optional(),
   state: z.union([z.enum(['open', 'closed', 'all']), commitStatusState]).optional(),
   prNumber: z.number().int().positive().optional(),
@@ -1219,7 +1251,7 @@ const titles: Record<RunnerOperation, string> = {
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
   github_action: 'Create and manage GitHub issues, pull requests, native PR reviews, review threads, reviewers, merges, commit statuses, and Actions workflow runs',
-  github_read: 'Read GitHub pull requests, reviews, review threads, issues, commits, comparisons, releases, tags, refs, commit statuses, check runs, and Actions workflow runs',
+  github_read: 'Read GitHub pull requests and their diffs, reviews, review threads, issues, commits, comparisons, files at a revision, releases, tags, refs, commit statuses, check runs, and Actions workflow runs',
   github_repository_create: 'Create a GitHub organization repository',
   secrets_list: 'List available secrets',
   agent_spawn: 'Spawn coding agent',
@@ -1331,7 +1363,7 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
   github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests; create commit statuses on a SHA (commit_status_create: state, context, description, targetUrl); dispatch a workflow on a ref with inputs (workflow_dispatch) and re-run only the failed jobs of a run (workflow_run_rerun_failed), in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, pullRequestMerge, commitStatusCreate, workflowDispatch, and workflowRunRerun; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_reviews, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_status_create, workflow_dispatch, workflow_run_rerun_failed, commit_list, compare, release_list, tag_list, ref_get, commit_status_get, check_runs_list, workflow_runs_list, workflow_run_view. Writes that can duplicate a side effect accept an idempotencyKey. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Atomic ref creation, compare-and-swap, and delete-if-match go through git_push leases, not this tool. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   github_repository_create: 'Create a new repository owned by a GitHub organization, through the principal\'s GitHub App installation on that organization. Not bound to a workspace: it takes owner, name, visibility ("public" or "private", required), optional description, autoInit, gitignoreTemplate, licenseTemplate, and a required idempotencyKey. The installation must grant the Administration: write permission; write access to existing repositories does not count. Personal user accounts are not supported. Returns fullName, the immutable numeric repositoryId, htmlUrl, visibility, defaultBranch, created, and replayed. Replaying the same idempotencyKey with the same input returns the recorded result without calling GitHub again; the same key with different input fails with CONFLICT. An existing repository name fails with GITHUB_REPOSITORY_EXISTS, or with UNKNOWN_REMOTE_STATE when an earlier attempt with the same key did not record its outcome, and is never reported as success. Check workspace_capabilities.githubRepositoryCreate first: it lists the organizations where creation is available. Create a repository only when the user explicitly asked for one; the harness never deletes a repository it created.',
-  github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). Maps to operations.pullRequestList, pullRequestView, pullRequestReviewList, issueList, issueView, commitList, compare, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace. Annotated read-only and non-destructive, so clients may group or pre-allow it. Supported actions: pr_list, pr_view, pr_diff (per-file patches of a pull request with its base and head SHAs; page with the returned nextCursor until it is null; each file reports patchStatus included, unavailable_upstream when GitHub omits the patch, or exceeds_response_limit; filesUnavailableUpstream counts changed files GitHub does not list, so the diff is complete only when it is 0 on the last page; STALE_HEAD when the pull request moved since the cursor), pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), file_read (one repository path at a branch, tag, or commit SHA given as sha, classified by its Git mode at the resolved commitSha: text content paged by byte offset with nextCursor, directory entries, a symlink target, or a submodule commit, and exists: false for a path absent at that commit; contentStatus binary or too_large instead of content when it cannot be returned as text; STALE_HEAD when the file changed since the cursor), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). pr_diff and file_read exist only on github_read. Maps to operations.pullRequestList, pullRequestView, pullRequestDiff, pullRequestReviewList, issueList, issueView, commitList, compare, fileRead, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
   agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
   agent_status: 'Read the execution state, budgets, and terminal summary of one coding agent.',

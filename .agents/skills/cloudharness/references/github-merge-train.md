@@ -44,7 +44,7 @@ lock is a branch pushed with a lease:
 
 ## Reads
 
-All on `github_read` (no approval prompts):
+All on `github_read` (annotated read-only):
 
 - `pr_reviews`: required `prNumber`. Returns every review plus
   `latestByReviewer` (login → latest `APPROVED`, `CHANGES_REQUESTED`, or

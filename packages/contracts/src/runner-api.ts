@@ -118,6 +118,8 @@ export const RepositoryOperationsSchema = z.object({
   pullRequestAutoMerge: z.boolean().optional(),
   commitList: z.boolean().optional(),
   compare: z.boolean().optional(),
+  pullRequestDiff: z.boolean().optional(),
+  fileRead: z.boolean().optional(),
   releaseList: z.boolean().optional(),
   tagList: z.boolean().optional(),
   pullRequestReviewList: z.boolean().optional(),
@@ -152,7 +154,7 @@ export const WorkspaceCapabilityResultSchema = z.object({
     readOnlyTool: z.literal('github_read'),
     readOnly: z.array(z.string()),
     gated: z.array(z.string())
-  }).strict().optional().describe('Which GitHub actions are read-only (callable through github_read without approval) and which stay gated on github_action'),
+  }).strict().optional().describe('Which GitHub actions are read-only (served by the read-only-annotated github_read, which clients may group or pre-allow) and which stay gated on github_action'),
   githubRepositoryCreate: GitHubRepositoryCreateCapabilitySchema.optional()
     .describe('Principal-level availability of github_repository_create; independent of the workspace repository')
 }).passthrough();
