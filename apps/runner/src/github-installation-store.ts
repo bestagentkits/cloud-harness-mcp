@@ -111,6 +111,14 @@ export function organizationFacts(source: GitHubInstallationOrganizationFacts): 
   };
 }
 
+/**
+ * One stored lifetime and write of an installation binding. A Disconnect followed by a new binding restarts the
+ * generation, so the creation and last-write times tell the two apart (short of both landing in one millisecond).
+ */
+export function installationRevision(record: GitHubInstallationRecord): string {
+  return `${record.status}:${record.generation}:${record.createdAt}:${record.updatedAt}`;
+}
+
 const repositoryKey = (principalId: string, owner: string, repository: string) =>
   `${principalId}\0${owner.toLowerCase()}\0${repository.toLowerCase()}`;
 const installationKey = (principalId: string, installationId: string | number) =>

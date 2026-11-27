@@ -5,7 +5,7 @@ import {
   type GitHubUserAuthorizationView
 } from '@cloud-harness/contracts';
 import { githubUserAuthorizationRequired } from './github-user-lane.js';
-import { GitHubUserTokenRejectedError, type GitHubUserAuthorizer, type GitHubUserTokenExchange } from './github-user-authorizer.js';
+import { GitHubUserTokenRejectedError, type GitHubUserAuthorizer, type GitHubUserRepositoryListing, type GitHubUserTokenExchange } from './github-user-authorizer.js';
 import type {
   GitHubUserAuthorizationLoaded, GitHubUserAuthorizationRecord, GitHubUserAuthorizationStore, GitHubUserTokenPair
 } from './github-user-authorization-store.js';
@@ -61,6 +61,10 @@ function authorizationChanged(): HarnessError {
 
 function unreadable(): HarnessError {
   return new HarnessError('UNAVAILABLE', 'The stored GitHub user authorization could not be read. Check the secret keyring.', 503, false);
+}
+
+function renewalNeeded(): HarnessError {
+  return new HarnessError('UNAVAILABLE', 'The GitHub user token needs renewal, which only a refresh of the listing performs.', 503, true);
 }
 
 /**
@@ -252,6 +256,50 @@ export class GitHubUserAuthorizationService {
     if (outcome.kind === 'refreshed') return outcome.credential;
     if (outcome.kind === 'revoked') throw githubUserAuthorizationRequired(outcome.reasonCode);
     return await this.accessToken(principalId);
+  }
+
+  /**
+   * What the principal's connected GitHub user reaches through this App, read with its own token. A 401 is
+   * answered as `recoverRejected` documents, once; a second refusal reads as the authorization changing.
+   * The answer is returned only while the authorization is still the connected generation that read it, so
+   * a Disconnect or a reconnect as another account during the read never yields the former account's
+   * repositories. The token is used here and never returned.
+   *
+   * With `renew: false` nothing about the authorization is written: a token close to expiry, an expired
+   * refresh token, or a 401 is reported as a retryable renewal-needed failure instead of being renewed or
+   * revoked, so a plain read (the dashboard's GET) never changes stored credential state.
+   */
+  async accessibleRepositories(principalId: string, options: { renew?: boolean } = {}): Promise<GitHubUserRepositoryListing & { login: string; generation: number }> {
+    let credential = options.renew === false ? this.usableTokenWithoutRenewal(principalId) : await this.accessToken(principalId);
+    for (let attempt = 0; ; attempt += 1) {
+      let listing: GitHubUserRepositoryListing;
+      try {
+        listing = await this.authorizer.userRepositoryListing(credential.token, credential.login);
+      } catch (error) {
+        if (!(error instanceof GitHubUserTokenRejectedError)) throw error;
+        if (options.renew === false) throw renewalNeeded();
+        if (attempt > 0) throw authorizationChanged();
+        credential = await this.recoverRejected(principalId, credential.generation);
+        continue;
+      }
+      const stored = this.store.get(principalId);
+      if (stored?.status !== 'connected' || stored.generation !== credential.generation) throw authorizationChanged();
+      return { ...listing, login: credential.login, generation: credential.generation };
+    }
+  }
+
+  /** The stored access token while it is usable as it is; anything that would need a write is renewal-needed. */
+  private usableTokenWithoutRenewal(principalId: string): GitHubUserAccessToken {
+    const current = this.read(principalId);
+    if (!current || current.record.status === 'disconnected') throw authorizationChanged();
+    const { record, tokens } = current;
+    if (record.status === 'revoked' || !tokens) throw githubUserAuthorizationRequired(record.reasonCode);
+    const now = this.now();
+    if ((record.refreshExpiresAt !== null && record.refreshExpiresAt <= now) ||
+      record.accessExpiresAt === null || record.accessExpiresAt - now <= this.refreshWindowMs) {
+      throw renewalNeeded();
+    }
+    return { token: tokens.accessToken, generation: record.generation, login: record.login };
   }
 
   private completionState(principalId: string): { issued: number; voidedThrough: number } {

@@ -36,6 +36,7 @@ const githubAuthorizeBody = z.union([
   z.object({ purpose: z.literal('user') }).strict()
 ]);
 const githubCompleteBody = z.object({ state: githubState, code: z.string().regex(/^[A-Za-z0-9_.-]{1,256}$/) }).strict();
+const githubRepositoriesRefreshBody = z.object({ refresh: z.boolean().default(true) }).strict();
 const browserBinding = (nonce: string) => createHash('sha256').update(nonce).digest('base64url');
 const githubCookieName = (state: string) => `${GITHUB_AUTHORIZATION_COOKIE_PREFIX}${createHash('sha256').update(state).digest('base64url').slice(0, 22)}`;
 
@@ -226,6 +227,13 @@ export function registerDashboardControlRoutes(
   });
   router.delete('/api/v1/artifacts/:artifactId', endpoint('artifact_delete', (request) => ({ artifactId: internalId('art').parse(request.params.artifactId), ...generation.parse(request.body) })));
   router.get('/api/v1/github', endpoint('github_status', () => ({})));
+  // The read never reconciles: it lists the stored installation grants and the connected user's live access.
+  router.get('/api/v1/github/repositories', endpoint('github_repository_list', () => ({ refresh: false, sync: false })));
+  // Reconciling rewrites stored grants, so it is a mutation: POST, behind the session and CSRF checks. The page
+  // sends it once on load (`refresh: false`, served from a fresh synced listing when one exists) and on Refresh.
+  router.post('/api/v1/github/repositories/refresh', endpoint('github_repository_list', (request) => ({
+    refresh: githubRepositoriesRefreshBody.parse(request.body ?? {}).refresh, sync: true
+  })));
   router.post('/api/v1/github/setup', endpoint('github_setup_begin', (request) => (request.body ?? {}) as Record<string, unknown>));
   // GitHub binding needs a user authorization that proves the GitHub user owns or administers the
   // installation. The browser names the installation (and the setup state when GitHub kept it);

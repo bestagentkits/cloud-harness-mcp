@@ -1,5 +1,5 @@
 import type { Response } from 'express';
-import { OAuthClientRegistrationResultSchema, OAuthGrantSettingsViewSchema, type RunnerResponse } from '@cloud-harness/contracts';
+import { GitHubRepositoryListingSchema, OAuthClientRegistrationResultSchema, OAuthGrantSettingsViewSchema, type RunnerResponse } from '@cloud-harness/contracts';
 import type { z } from 'zod';
 
 /**
@@ -240,7 +240,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'global_secret_list', 'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
-  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect',
+  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect', 'github_repository_list',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
   'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
@@ -431,6 +431,21 @@ function githubStatus(data: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * The repository listing: names, access levels, and account logins only. It is validated against its schema
+ * first, so a value of an unexpected shape (an object where a name belongs) never reaches the browser; a
+ * listing that fails validation is replaced whole by an empty one that says so.
+ */
+function githubRepositoryListing(data: Record<string, unknown>): Record<string, unknown> {
+  const parsed = GitHubRepositoryListingSchema.safeParse(data);
+  if (parsed.success) return parsed.data;
+  return {
+    repositories: [], accounts: [], unreachableAccounts: [], userAuthorization: 'unavailable',
+    listedAt: new Date().toISOString(), synced: false, incomplete: true,
+    warnings: ['The runner returned a repository listing the dashboard could not read.']
+  };
+}
+
+/**
  * The dashboard projection boundary. Every branch returns an object built by `pick`, `list`, or a
  * literal, so the boundary can be named instead of left as `unknown` that every caller must re-check.
  */
@@ -551,6 +566,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'github_setup_begin') return pick(data, ['url', 'state', 'expiresAt']);
   if (operation === 'github_authorize_begin') return pick(data, ['url', 'expiresAt']);
   if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect'].includes(operation)) return githubStatus(data);
+  if (operation === 'github_repository_list') return githubRepositoryListing(data);
   if (operation === 'privilege_grant_list') return list(data, 'grants', privilegeGrantKeys);
   if (operation === 'privilege_grant_approve' || operation === 'privilege_grant_reject') return { grant: pick(data.grant, privilegeGrantKeys) };
   if (operation === 'package_overview') return packageOverview(data);
@@ -741,6 +757,7 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   },
   github_disconnect: { NOT_FOUND: 'GitHub installation not found.' },
   github_user_disconnect: { UNAVAILABLE: 'The GitHub user connection is unavailable. Check the GitHub App credentials and SECRET_KEYRING in the runner configuration, then retry.' },
+  github_repository_list: { UNAVAILABLE: githubUnavailable, NOT_SUPPORTED: 'No GitHub App is configured on this harness.' },
   package_plan_approve: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_rollback: { FORBIDDEN: packagesDisabled },

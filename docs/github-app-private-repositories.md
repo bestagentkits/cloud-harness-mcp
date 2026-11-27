@@ -370,6 +370,12 @@ What it changes:
   organization until the person starts an SSO session for it; the error names
   `https://github.com/orgs/<org>/sso`. Nothing is revoked, and other
   organizations keep working.
+- `github_repositories_list` (and **All accessible repositories** on the
+  dashboard GitHub page) lists what the bound installations and the connected
+  user reach, limited to the user's own access while the user is connected, and
+  names the user's account and public organization memberships that no
+  reachable installation covers. Nothing outside an installation can be listed;
+  see [MCP semantics](mcp-api.md).
 
 Security properties, storage, and residual risk (one stored credential spans
 every repository the App is installed on and the user can access) are in the

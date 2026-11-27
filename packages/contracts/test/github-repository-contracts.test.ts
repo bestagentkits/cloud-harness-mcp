@@ -45,3 +45,19 @@ describe('github_repository_create contract', () => {
     expect(ErrorCodeSchema.options).toContain('GITHUB_REPOSITORY_EXISTS');
   });
 });
+
+describe('github_repositories_list contract', () => {
+  it('is a workspace-free, read-only, idempotent open-world tool with bounded paging', () => {
+    const spec = TOOL_SPECS.find((tool) => tool.name === 'github_repositories_list');
+    expect(spec).toMatchObject({ readOnly: true, destructive: false, idempotent: true, openWorld: true });
+    const schema = TOOL_SCHEMA_BY_NAME.github_repositories_list;
+    expect(schema.parse({})).toEqual({ refresh: false, limit: 200 });
+    expect(schema.safeParse({ workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaa' }).success).toBe(false);
+    expect(schema.safeParse({ limit: 501 }).success).toBe(false);
+    expect(schema.safeParse({ cursor: '-1' }).success).toBe(false);
+    expect(schema.safeParse({ owner: 'acme/labs' }).success).toBe(false);
+    expect(schema.safeParse({ owner: 'developer_company' }).success).toBe(true);
+    expect(schema.safeParse({ owner: '_company' }).success).toBe(false);
+    expect(schema.safeParse({ owner: 'alice', query: 'api', cursor: '200', limit: 50 }).success).toBe(true);
+  });
+});

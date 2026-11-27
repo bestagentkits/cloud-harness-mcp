@@ -84,3 +84,95 @@ export type GitHubRepositoryCreateInput = z.infer<typeof GitHubRepositoryCreateI
 export type GitHubRepositoryCreateResult = z.infer<typeof GitHubRepositoryCreateResultSchema>;
 export type GitHubRepositoryCreateCapability = z.infer<typeof GitHubRepositoryCreateCapabilitySchema>;
 export type GitHubRepositoryCreateOrganization = z.infer<typeof GitHubRepositoryCreateOrganizationSchema>;
+
+/**
+ * Any GitHub account login (user or organization): 1-39 letters, digits, hyphens, or underscores, starting and
+ * ending with a letter or digit. Enterprise Managed User logins carry an underscore (`developer_company`).
+ */
+export const GitHubAccountLoginSchema = z.string()
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,37}[A-Za-z0-9])?$/, 'owner must be a GitHub account login (1-39 letters, digits, hyphens, or underscores)');
+
+export const GitHubRepositoriesListInputSchema = z.object({
+  owner: GitHubAccountLoginSchema.optional().describe('Only repositories owned by this user or organization (case-insensitive).'),
+  query: z.string().min(1).max(100).optional().describe('Case-insensitive substring matched against owner/name.'),
+  refresh: z.boolean().default(false).describe('Bypass the short per-principal cache and read GitHub again.'),
+  cursor: z.string().regex(/^(?:0|[1-9]\d{0,5})$/, 'invalid repository list cursor').optional(),
+  limit: z.number().int().min(1).max(500).default(200)
+}).strict();
+
+/** Which credential lane reaches a listed repository, in the order the runner tries them. */
+export const GitHubRepositoryAccessLaneSchema = z.enum(['installation', 'user']);
+
+export const GitHubListedRepositorySchema = z.object({
+  fullName: z.string().min(3).max(140),
+  owner: z.string().min(1).max(39),
+  name: z.string().min(1).max(100),
+  /** Credential-free clone URL accepted by workspace_open: exactly `https://github.com/<owner>/<name>.git`. */
+  repositoryUrl: z.string().max(200).regex(/^https:\/\/github\.com\/[A-Za-z0-9_-]{1,39}\/[A-Za-z0-9._-]{1,100}\.git$/, 'repositoryUrl must be a credential-free github.com clone URL'),
+  /**
+   * The credential permission the listing saw, capped at the connected GitHub user's own permission:
+   * `write` is what git_push needs, not a guarantee (branch protection still applies). A repository the
+   * user's listing reports as archived is `read`; installation grants alone do not say whether it is.
+   */
+  access: z.enum(['read', 'write']),
+  via: GitHubRepositoryAccessLaneSchema,
+  /** Known when the connected GitHub user's listing reported it. */
+  private: z.boolean().optional(),
+  archived: z.boolean().optional(),
+  defaultBranch: z.string().min(1).max(255).optional()
+}).strict();
+
+export const GitHubListedAccountSchema = z.object({
+  login: z.string().min(1).max(39),
+  type: z.enum(['Organization', 'User']).nullable(),
+  via: GitHubRepositoryAccessLaneSchema,
+  installationId: z.string().min(1).max(100),
+  repositoryCount: z.number().int().min(0),
+  /** False when GitHub could not be read for this account now: stored grants or partial pages stand in. */
+  live: z.boolean()
+}).strict();
+
+/**
+ * An account the connected GitHub user belongs to (the personal account and public organization
+ * memberships) where no installation of this App reachable by that user exists. `installed`: the principal
+ * has a binding there, so the App is installed but this user cannot access any of its repositories (ask an
+ * owner for access). `unknown`: the App may not be installed (installUrl, when the slug is known).
+ */
+export const GitHubUnreachableAccountSchema = z.object({
+  login: z.string().min(1).max(39),
+  type: z.enum(['Organization', 'User']),
+  installation: z.enum(['installed', 'unknown']),
+  installUrl: z.string().max(200).regex(/^https:\/\/github\.com\/apps\/[A-Za-z0-9-]{1,100}\/installations\/new$/, 'installUrl must be a github.com App installation URL').optional()
+}).strict();
+
+/** Most repositories one principal's listing holds; past it the listing reports itself incomplete. */
+export const GITHUB_REPOSITORY_LISTING_MAX = 10_000;
+
+/** The whole listing of one principal before filters and paging; the dashboard reads it whole. */
+export const GitHubRepositoryListingSchema = z.object({
+  repositories: z.array(GitHubListedRepositorySchema).max(GITHUB_REPOSITORY_LISTING_MAX),
+  accounts: z.array(GitHubListedAccountSchema).max(1_000),
+  unreachableAccounts: z.array(GitHubUnreachableAccountSchema).max(1_000),
+  /** The principal's GitHub user authorization as the user lane saw it. */
+  userAuthorization: z.enum(['connected', 'revoked', 'disconnected', 'not_connected', 'not_applicable', 'unavailable']),
+  /** When the listing was read (ISO 8601); a cached answer keeps its original time. */
+  listedAt: z.string().max(40),
+  /** False when installation grants came from the store without a refresh from GitHub. */
+  synced: z.boolean(),
+  /** True when a bound or a failure left reachable repositories out. */
+  incomplete: z.boolean(),
+  warnings: z.array(z.string().max(500)).max(20)
+}).strict();
+
+export const GitHubRepositoriesListResultSchema = GitHubRepositoryListingSchema.extend({
+  repositories: z.array(GitHubListedRepositorySchema).max(500),
+  /** Repositories matching the filters before paging. */
+  totalCount: z.number().int().min(0)
+}).strict();
+
+export type GitHubRepositoriesListInput = z.infer<typeof GitHubRepositoriesListInputSchema>;
+export type GitHubListedRepository = z.infer<typeof GitHubListedRepositorySchema>;
+export type GitHubListedAccount = z.infer<typeof GitHubListedAccountSchema>;
+export type GitHubUnreachableAccount = z.infer<typeof GitHubUnreachableAccountSchema>;
+export type GitHubRepositoryListing = z.infer<typeof GitHubRepositoryListingSchema>;
+export type GitHubRepositoriesListResult = z.infer<typeof GitHubRepositoriesListResultSchema>;

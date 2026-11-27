@@ -2,11 +2,12 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { HarnessError, type GitHubUserAuthorizationView } from '@cloud-harness/contracts';
-import type {
-  GitHubInstallationRecord,
-  GitHubInstallationMutationAudit,
-  GitHubInstallationStore,
-  VerifiedGitHubInstallation
+import {
+  installationRevision,
+  type GitHubInstallationRecord,
+  type GitHubInstallationMutationAudit,
+  type GitHubInstallationStore,
+  type VerifiedGitHubInstallation
 } from './github-installation-store.js';
 import type { GitHubUserAuthorizationService } from './github-user-authorization-service.js';
 import type { GitHubUserAuthorizer, GitHubUserInstallationProof } from './github-user-authorizer.js';
@@ -316,6 +317,14 @@ export type GitHubAuthorizationCompletion =
 const AUTHORIZATION_TTL_MS = 10 * 60_000;
 
 export class GitHubBindingService {
+  /**
+   * Per installation, how many times a binding was created or removed in this process. Store generations restart
+   * when a binding is deleted and created again (and timestamps can repeat within a millisecond), so this counter
+   * is what tells two binding lifetimes apart. Every binding write goes through this service; nothing that it
+   * fences survives a restart, so the counter need not either.
+   */
+  readonly #lifetimes = new Map<string, number>();
+
   constructor(
     private readonly states: GitHubSetupStateStore,
     private readonly installations: GitHubInstallationStore,
@@ -323,6 +332,15 @@ export class GitHubBindingService {
     private readonly now: () => number = Date.now,
     private readonly userAuthorization?: GitHubUserAuthorization
   ) {}
+
+  /** The lifetime counter of an installation's binding; it changes on every bind and every Disconnect. */
+  bindingLifetime(installationId: string | number): number {
+    return this.#lifetimes.get(String(installationId)) ?? 0;
+  }
+
+  private nextLifetime(installationId: string | number): void {
+    this.#lifetimes.set(String(installationId), this.bindingLifetime(installationId) + 1);
+  }
 
   /** Whether the GitHub App OAuth client credentials are configured, so a binding can be proven. */
   get userAuthorizationConfigured(): boolean {
@@ -332,6 +350,11 @@ export class GitHubBindingService {
   /** The principal's GitHub user token lifecycle; `undefined` while no keyring can protect a token. */
   get userAuthorizations(): GitHubUserAuthorizationService | undefined {
     return this.userAuthorization?.userAuthorizations;
+  }
+
+  /** Reads one installation and its repositories live with the App JWT, storing nothing. */
+  async verifyInstallation(installationId: string): Promise<VerifiedGitHubInstallation> {
+    return await this.verifier.verifyInstallation(installationId);
   }
 
   beginSetup(input: {
@@ -454,6 +477,8 @@ export class GitHubBindingService {
         audit ? (record, replacedPrincipalId) => audit(record, proof, replacedPrincipalId) : undefined,
         { takeOver: true }
       );
+      // Only a committed bind starts a new lifetime; the counter moves in the same synchronous step as the write.
+      this.nextLifetime(installationId);
       return { purpose: 'bind', installation };
     } catch (error) {
       // A refusal is a decision about this installation; a retryable provider failure is not.
@@ -484,28 +509,64 @@ export class GitHubBindingService {
     if (list.length === 0) return undefined;
 
     let lastRecord: GitHubInstallationRecord | undefined;
-    for (const installation of list) {
-      if (installation.status === 'uninstalled') continue;
-      let verified: VerifiedGitHubInstallation;
-      try {
-        verified = await this.verifier.verifyInstallation(installation.installationId);
-      } catch (error) {
-        if (error instanceof HarnessError && error.code === 'NOT_FOUND') {
-          lastRecord = this.installations.markUninstalled(principalId, installation.installationId, this.now(), audit);
-          continue;
+    for (const listed of list) {
+      for (let attempt = 0; ; attempt += 1) {
+        // The record and its binding lifetime are read together, with no await between them and the request.
+        const installation = this.installations.getInstallation(principalId, listed.installationId);
+        if (!installation || installation.status === 'uninstalled') break;
+        const outcome = await this.verifyOnce(principalId, installation, this.bindingLifetime(installation.installationId), audit);
+        if (outcome !== SUPERSEDED) {
+          lastRecord = outcome ?? lastRecord;
+          break;
         }
-        throw error;
+        // Another write, a Disconnect, or a rebind landed while GitHub was read, so that answer was not stored.
+        // The binding as it is now is verified once more; a binding that is gone needs no verification.
+        if (attempt > 0) throw new HarnessError('UNAVAILABLE', 'The GitHub installation changed while it was being verified. Retry.', 503, true);
       }
-      if (
-        !sameId(installation.appId, verified.appId) ||
-        !sameId(installation.accountId, verified.accountId) ||
-        !sameId(installation.installationId, verified.installationId)
-      ) {
-        throw new HarnessError('CONFLICT', 'GitHub installation identity changed during reconciliation', 409);
-      }
-      lastRecord = this.installations.replaceVerified(principalId, verified, this.now(), audit);
     }
     return lastRecord ?? list[0];
+  }
+
+  /**
+   * Verifies one installation with GitHub and stores the answer over the binding it was read for. GitHub is read
+   * without holding anything, so the write happens only while the principal still holds that same binding (no
+   * await separates the check from the write); otherwise nothing is written and `SUPERSEDED` says so.
+   */
+  private async verifyOnce(
+    principalId: string,
+    installation: GitHubInstallationRecord,
+    lifetime: number,
+    audit?: GitHubInstallationMutationAudit
+  ): Promise<GitHubInstallationRecord | undefined | typeof SUPERSEDED> {
+    let verified: VerifiedGitHubInstallation;
+    try {
+      verified = await this.verifier.verifyInstallation(installation.installationId);
+    } catch (error) {
+      if (error instanceof HarnessError && error.code === 'NOT_FOUND') {
+        if (!this.stillHeld(principalId, installation, lifetime)) return SUPERSEDED;
+        return this.installations.markUninstalled(principalId, installation.installationId, this.now(), audit);
+      }
+      throw error;
+    }
+    if (
+      !sameId(installation.appId, verified.appId) ||
+      !sameId(installation.accountId, verified.accountId) ||
+      !sameId(installation.installationId, verified.installationId)
+    ) {
+      throw new HarnessError('CONFLICT', 'GitHub installation identity changed during reconciliation', 409);
+    }
+    if (!this.stillHeld(principalId, installation, lifetime)) return SUPERSEDED;
+    return this.installations.replaceVerified(principalId, verified, this.now(), audit);
+  }
+
+  /**
+   * Whether the principal still holds exactly the binding a reconcile read: the same record revision and the
+   * same binding lifetime, so a Disconnect followed by a new binding is never taken for the old one.
+   */
+  private stillHeld(principalId: string, observed: GitHubInstallationRecord, lifetime: number): boolean {
+    const current = this.installations.getInstallation(principalId, observed.installationId);
+    return current !== undefined && this.bindingLifetime(observed.installationId) === lifetime &&
+      installationRevision(current) === installationRevision(observed);
   }
 
   disconnect(
@@ -513,7 +574,10 @@ export class GitHubBindingService {
     installationId: string | number,
     audit?: GitHubInstallationMutationAudit
   ): boolean {
-    return this.installations.removeInstallation(principalId, installationId, this.now(), audit);
+    const removed = this.installations.removeInstallation(principalId, installationId, this.now(), audit);
+    // A Disconnect that removed nothing (not this principal's binding, or none at all) leaves the lifetime alone.
+    if (removed) this.nextLifetime(installationId);
+    return removed;
   }
 
   /** Disconnects the principal's GitHub user authorization; `undefined` when it never had one. */
@@ -574,3 +638,6 @@ function invalidSetupState(): HarnessError {
 function invalidAuthorizationState(): HarnessError {
   return new HarnessError('FORBIDDEN', 'GitHub authorization is invalid or expired. Start the connection again.', 403);
 }
+
+/** Marks a verification whose answer was not stored because the binding changed while GitHub was read. */
+const SUPERSEDED = Symbol('superseded');

@@ -14,7 +14,7 @@ type Member = {
 /** Tools whose input schema carries no `workspaceId`; they pass through unchanged. */
 const WORKSPACELESS_OPERATIONS = new Set<RunnerOperation>([
   'operation_status', 'operation_cancel', 'operation_wait',
-  'artifacts_list', 'artifacts_read', 'artifacts_delete', 'github_repository_create'
+  'artifacts_list', 'artifacts_read', 'artifacts_delete', 'github_repository_create', 'github_repositories_list'
 ]);
 
 /**
