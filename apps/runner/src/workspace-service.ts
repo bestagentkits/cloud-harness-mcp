@@ -33,6 +33,7 @@ import {
   type RunnerResponse,
   type WorkspaceCapabilityResult,
   type GitHubRepositoryCreateInput,
+  type GitHubRepositoriesListInput,
   type PrincipalCapabilityResult,
   type ToolkitSelection,
   type WorkspaceLifecycleSettingName,
@@ -75,6 +76,7 @@ import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
 import { GitHubRepositoryCreator } from './github-repository-creator.js';
+import { GitHubRepositoryLister } from './github-repository-lister.js';
 import type { GitHubUserAuthorizationService, GitHubUserLane } from './github-user-authorization-service.js';
 import { readGitHubUserAuthorization, type GitHubUserAuthorizationRecord } from './github-user-authorization-store.js';
 import {
@@ -424,6 +426,8 @@ export class WorkspaceService {
   private failureIntelligence?: FailureIntelligence | undefined;
   /** Workspace-independent organization repository creation through the principal's App installation. */
   readonly repositoryCreator: GitHubRepositoryCreator;
+  /** Workspace-independent listing of the GitHub repositories the principal can open. */
+  readonly repositoryLister: GitHubRepositoryLister;
   constructor(
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
@@ -489,6 +493,24 @@ export class WorkspaceService {
         ? async (principalId, installationId) => {
             await this.githubBinding!.reconcile(principalId, this.installationReconcileAudit(principalId), installationId);
           }
+        : undefined
+    });
+    this.repositoryLister = new GitHubRepositoryLister({
+      config: this.config,
+      installations: this.githubInstallations,
+      reconcileInstallation: this.githubBinding
+        ? async (principalId, installationId) => {
+            await this.githubBinding!.reconcile(principalId, this.installationReconcileAudit(principalId), installationId);
+          }
+        : undefined,
+      verifyInstallation: this.githubBinding ? async (installationId) => await this.githubBinding!.verifyInstallation(installationId) : undefined,
+      userAuthorization: (principalId) => {
+        const record = readGitHubUserAuthorization(this.store.database, principalId);
+        return record ? { status: record.status, generation: record.generation } : undefined;
+      },
+      bindingLifetime: this.githubBinding ? (installationId) => this.githubBinding!.bindingLifetime(installationId) : undefined,
+      userRepositories: this.githubBinding?.userAuthorizations
+        ? async (principalId, options) => await this.githubBinding!.userAuthorizations!.accessibleRepositories(principalId, options)
         : undefined
     });
     // A running terminal is active work: reads, input, and resizes refresh the lease (throttled by the
@@ -3198,6 +3220,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     // Repository creation is not bound to a workspace: the repository does not exist yet.
     if (operation === 'github_repository_create') {
       return await this.repositoryCreator.create(ownerId, validated as GitHubRepositoryCreateInput, signal);
+    }
+    if (operation === 'github_repositories_list') {
+      return await this.repositoryLister.list(ownerId, validated as GitHubRepositoriesListInput);
     }
     if (operation === 'secrets_list') return this.secretsList(ownerId, validated);
     if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);

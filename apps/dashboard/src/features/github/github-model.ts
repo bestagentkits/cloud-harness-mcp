@@ -1,6 +1,7 @@
 import { apiClient } from '@/lib/api-client';
 import { ApiError, UnauthorizedError } from '@/lib/api-client';
-import { ClientValidationError, mutationErrorText } from '@/lib/bff-mutation';
+import { bffPrefix, ClientValidationError, mutationErrorText } from '@/lib/bff-mutation';
+import type { QueryClient } from '@tanstack/react-query';
 
 export type GitHubInstallation = {
   appId?: string | number | null;
@@ -11,6 +12,31 @@ export type GitHubInstallation = {
   checkedAt?: string | number | null;
 };
 export type GitHubRepository = { installationId?: string | number | null; owner: string; repository: string; contents?: string | null; status?: string | null };
+
+/** One repository from the live listing (`GET /github/repositories`); never carries a token. */
+export type GitHubListedRepository = {
+  fullName: string; owner: string; name: string; repositoryUrl: string;
+  access: 'read' | 'write'; via: 'installation' | 'user';
+  private?: boolean; archived?: boolean; defaultBranch?: string;
+};
+export type GitHubListedAccount = { login: string; type: 'Organization' | 'User' | null; via: 'installation' | 'user'; installationId: string; repositoryCount: number; live: boolean };
+/** An account of the connected user (personal or a public organization membership) that no reachable installation covers. */
+export type GitHubUnreachableAccount = { login: string; type: 'Organization' | 'User'; installation?: 'installed' | 'unknown'; installUrl?: string };
+export type GitHubRepositoryListing = {
+  repositories: GitHubListedRepository[];
+  accounts: GitHubListedAccount[];
+  unreachableAccounts: GitHubUnreachableAccount[];
+  userAuthorization?: string;
+  listedAt?: string;
+  incomplete?: boolean;
+  warnings: string[];
+};
+
+/** Case-insensitive match of the filter box against `owner/name`. */
+export function filterRepositories(repositories: GitHubListedRepository[], filter: string): GitHubListedRepository[] {
+  const needle = filter.trim().toLowerCase();
+  return needle ? repositories.filter((repository) => repository.fullName.toLowerCase().includes(needle)) : repositories;
+}
 
 export type GitHubUserAuthorizationReason = 'bad_refresh_token' | 'refresh_token_expired';
 /** The person's own GitHub user authorization. `refreshExpiresAt` is epoch ms and set only when connected; `reasonCode` only when revoked. */
@@ -104,4 +130,16 @@ export const githubApi = {
   disconnectUser: () => apiClient.request('/github/user/disconnect', { method: 'POST', body: {} })
 };
 
-export const GITHUB_READS = ['/github'] as const;
+/** Every GitHub read, so a connection change refreshes the repository listing with the status. */
+export const GITHUB_READS = ['/github', '/github/repositories'] as const;
+
+/**
+ * After a connection change or a refresh: cancel any read still in flight, then refetch. Invalidating alone
+ * would join a pending first read, whose answer can describe the connection as it was before the change.
+ */
+export async function refetchGitHubReads(queryClient: QueryClient, paths: readonly string[] = GITHUB_READS): Promise<void> {
+  await Promise.all(paths.map(async (path) => {
+    await queryClient.cancelQueries({ queryKey: bffPrefix(path) });
+    await queryClient.invalidateQueries({ queryKey: bffPrefix(path) });
+  }));
+}

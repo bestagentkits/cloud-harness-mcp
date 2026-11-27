@@ -1,4 +1,4 @@
-# GitHub repository creation and bootstrap
+# GitHub repository discovery, creation, and bootstrap
 
 Create a new organization repository, then fill it through a normal workspace.
 Repository creation is a separate, workspace-free tool: the repository does not
@@ -9,6 +9,48 @@ or inaccessible, not missing.
 Create a repository only when the user explicitly asked for one, with the owner,
 name, and visibility they chose. Never pick `public` on your own: visibility is
 required and has no default.
+
+## Discover repositories you can open
+
+Before guessing a repository URL, or when the user asks which repositories are
+available, list them. Check this list before concluding that a repository is
+missing.
+
+<!-- cloudharness-tool:github_repositories_list -->
+### `github_repositories_list`
+
+- Not bound to a workspace; read-only, so no approval prompt. Never returns a
+  token.
+- Lists the repositories the principal can open across its personal account and
+  organizations, read live from GitHub, in the order credentials are tried:
+  `via: "installation"` (GitHub App installations bound to this identity; each
+  call re-verifies them and refreshes the stored grants), then `via: "user"`
+  (installations of the App the person's connected GitHub user can reach).
+- While a GitHub user is connected, only repositories that user can access are
+  listed, and `access` is capped at the user's permission. If the user's access
+  cannot be read, nothing is listed and `warnings` says why.
+- Each repository: `fullName`, `repositoryUrl` (pass it to `workspace_open`),
+  `access` (`write` is the permission `git_push` needs, not a guarantee;
+  archived ones the user listing reports are `read`), `via`, and when known `private`,
+  `archived`, `defaultBranch`.
+- `unreachableAccounts`: the person's own account and public organization
+  memberships that no App installation reachable by them covers.
+  `installation: "installed"` means the App is there but they have no access:
+  tell them to ask an owner for access. `installation: "unknown"` may mean the
+  App is not installed (`installUrl` when present). Public repositories still
+  clone. Private memberships are invisible to the App, so absence from this
+  list proves nothing.
+- Inputs: optional `owner`, `query` (substring of `owner/name`), `cursor` and
+  `limit` (1-500, default 200; page while `truncated` is true), and `refresh`
+  to bypass the 60-second cache.
+- A failing account becomes a `warnings` entry instead of an error (stored
+  grants stand in, `accounts[].live: false`); `incomplete: true` means some
+  repositories are missing. Read `warnings` before answering "not available".
+- `NOT_SUPPORTED`: no GitHub App is configured, or local mode.
+
+<!-- cloudharness-example:github_repositories_list
+{"owner":"example-org","query":"service","limit":50}
+-->
 
 ## Check availability first
 

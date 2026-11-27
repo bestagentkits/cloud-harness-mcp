@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { AgentProxyOperationSchema, AgentRuntimeKindSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
-import { GitHubRepositoryCreateInputSchema } from './github-repository-schemas.js';
+import { GitHubRepositoriesListInputSchema, GitHubRepositoryCreateInputSchema } from './github-repository-schemas.js';
 import {
   ModelConnectionVerifyToolInputSchema,
   ModelProfileCreateToolInputSchema,
@@ -1123,6 +1123,7 @@ const schemas = {
   github_action: githubActionInput.pipe(githubActionUnion as unknown as z.ZodType<unknown, z.output<typeof githubActionInput>>),
   github_read: githubReadInput.pipe(githubReadUnion as unknown as z.ZodType<unknown, z.output<typeof githubReadInput>>),
   github_repository_create: GitHubRepositoryCreateInputSchema,
+  github_repositories_list: GitHubRepositoriesListInputSchema,
   secrets_list: z.object({
     ...workspace,
     environmentId: EnvironmentIdSchema.optional(),
@@ -1221,6 +1222,7 @@ const titles: Record<RunnerOperation, string> = {
   github_action: 'Create and manage GitHub issues, pull requests, native PR reviews, review threads, reviewers, merges, commit statuses, and Actions workflow runs',
   github_read: 'Read GitHub pull requests, reviews, review threads, issues, commits, comparisons, releases, tags, refs, commit statuses, check runs, and Actions workflow runs',
   github_repository_create: 'Create a GitHub organization repository',
+  github_repositories_list: 'List GitHub repositories you can open',
   secrets_list: 'List available secrets',
   agent_spawn: 'Spawn coding agent',
   agent_status: 'Read coding agent status',
@@ -1332,6 +1334,7 @@ const descriptions: Record<RunnerOperation, string> = {
   github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests; create commit statuses on a SHA (commit_status_create: state, context, description, targetUrl); dispatch a workflow on a ref with inputs (workflow_dispatch) and re-run only the failed jobs of a run (workflow_run_rerun_failed), in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, pullRequestMerge, commitStatusCreate, workflowDispatch, and workflowRunRerun; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_reviews, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_status_create, workflow_dispatch, workflow_run_rerun_failed, commit_list, compare, release_list, tag_list, ref_get, commit_status_get, check_runs_list, workflow_runs_list, workflow_run_view. Writes that can duplicate a side effect accept an idempotencyKey. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Atomic ref creation, compare-and-swap, and delete-if-match go through git_push leases, not this tool. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   github_repository_create: 'Create a new repository owned by a GitHub organization, through the principal\'s GitHub App installation on that organization. Not bound to a workspace: it takes owner, name, visibility ("public" or "private", required), optional description, autoInit, gitignoreTemplate, licenseTemplate, and a required idempotencyKey. The installation must grant the Administration: write permission; write access to existing repositories does not count. Personal user accounts are not supported. Returns fullName, the immutable numeric repositoryId, htmlUrl, visibility, defaultBranch, created, and replayed. Replaying the same idempotencyKey with the same input returns the recorded result without calling GitHub again; the same key with different input fails with CONFLICT. An existing repository name fails with GITHUB_REPOSITORY_EXISTS, or with UNKNOWN_REMOTE_STATE when an earlier attempt with the same key did not record its outcome, and is never reported as success. Check workspace_capabilities.githubRepositoryCreate first: it lists the organizations where creation is available. Create a repository only when the user explicitly asked for one; the harness never deletes a repository it created.',
   github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). Maps to operations.pullRequestList, pullRequestView, pullRequestReviewList, issueList, issueView, commitList, compare, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_repositories_list: 'List the GitHub repositories this principal can open with workspace_open, across the personal account and organizations, read live from GitHub. Not bound to a workspace. Sources follow the runner\'s credential order: the GitHub App installations bound to this principal (via "installation"; each call re-verifies them with GitHub, which also refreshes their stored repository grants), then the installations of this App the connected GitHub user can reach (via "user"). While a GitHub user is connected, only repositories that user can access are listed and access is capped at the user\'s permission; if the user\'s access cannot be read, nothing is listed and a warning says why. A GitHub App reaches only accounts where it is installed: unreachableAccounts names the user\'s own account and public organization memberships (private memberships are invisible to the App) that no installation reachable by the user covers, with installUrl when known; their public repositories still clone. Each repository reports fullName, repositoryUrl (pass it to workspace_open), access ("write" is the permission git_push needs, not a guarantee; repositories the user listing reports archived are "read"), via, and when known private, archived, defaultBranch. Optional owner and query filter; cursor and limit page the sorted result; refresh bypasses the 60-second per-principal cache, which is also dropped whenever the GitHub connection or a binding changes. Failures on one account become warnings and set incomplete: true, as do listing bounds (10,000 repositories). Returns NOT_SUPPORTED when no GitHub App is configured. Never returns or mints a token.',
   secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
   agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
   agent_status: 'Read the execution state, budgets, and terminal summary of one coding agent.',
@@ -1349,7 +1352,7 @@ const readOnly = new Set<RunnerOperation>([
   'git_status', 'git_diff', 'git_log', 'git_identity_status',
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search',
   'knowledge_read', 'knowledge_list', 'knowledge_search', 'knowledge_graph', 'deployments_list',
-  'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
+  'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read', 'github_repositories_list',
   'packages_list', 'packages_status',
   'agent_status', 'agent_logs', 'agent_list',
   'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_spend_summary'
@@ -1377,7 +1380,7 @@ const idempotent = new Set<RunnerOperation>([
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'memories_write',
   'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
   'deployments_list',
-  'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
+  'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read', 'github_repositories_list',
   'packages_apply', 'packages_list', 'packages_status', 'packages_rollback',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
   'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
@@ -1385,7 +1388,7 @@ const idempotent = new Set<RunnerOperation>([
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
-  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read', 'github_repository_create',
+  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read', 'github_repository_create', 'github_repositories_list',
   'packages_plan', 'packages_apply',
   'agent_spawn', 'agent_message',
   'model_catalog_search', 'model_connection_verify'

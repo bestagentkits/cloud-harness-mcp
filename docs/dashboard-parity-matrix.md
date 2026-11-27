@@ -357,6 +357,8 @@ descriptions with empty values and revokes its object URL immediately.
 | Method | Path | Owner | Fence | UI caller | Feature | Phase | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | GET | `/github` | control router | — | integrations page | `integrations` | P4 | |
+| GET | `/github/repositories` | control router | — | integrations page (**All accessible repositories**, React shell only) | `integrations` | P4 | Never reconciles: stored installation grants plus the connected user's live access (`synced: false`). The projection is validated against `GitHubRepositoryListingSchema`. The legacy shell keeps its stored-grant list |
+| POST | `/github/repositories/refresh` | control router | strict `{refresh?: boolean}` | integrations page (**Refresh from GitHub** only; opening the page sends no write) | `integrations` | P4 | Reconciles the bound installations (rewrites their grants), then answers the listing |
 | POST | `/github/setup` | control router | strict | integrations page | `integrations` | P4 | Returns a one-time `url` and `state`; navigate natively |
 | POST | `/github/authorize` | control router | strict `installationId`, optional setup `state`, or exactly `{purpose:'user'}` for the person's own authorization; sets a per-flow HttpOnly authorization nonce cookie named after the returned state | callback handling | `integrations` | P4 | Returns a one-time GitHub authorize `url`; navigate natively |
 | POST | `/github/complete` | control router | strict `state`, `code` (no `purpose`: the runner reads it from the stored state); requires that flow's nonce cookie | callback handling | `integrations` | P4 | Clear the query after completion; the answer is the `GET /github` projection |

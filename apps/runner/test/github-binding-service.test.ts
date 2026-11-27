@@ -227,6 +227,45 @@ describe('GitHub installation binding', () => {
     await expect(service.reconcile('principal-a')).resolves.toMatchObject({ status: 'uninstalled', generation: 4 });
   });
 
+  it('never recreates a binding that was disconnected while GitHub was being read', async () => {
+    await bind('principal-a');
+    const github = Promise.withResolvers<VerifiedGitHubInstallation>();
+    verifyInstallation.mockImplementationOnce(() => github.promise);
+    const pending = service.reconcile('principal-a');
+    expect(service.disconnect('principal-a', '456')).toBe(true);
+    github.resolve(activeInstallation());
+    await pending;
+    expect(store.getInstallation('principal-a', '456')).toBeUndefined();
+    expect(store.getRepositoryGrant('principal-a', 'example', 'private-repo')).toMatchObject({ status: 'removed' });
+  });
+
+  it('re-verifies the new binding instead of storing an answer read for a binding that was disconnected and rebound', async () => {
+    await bind('principal-a');
+    const stale = Promise.withResolvers<VerifiedGitHubInstallation>();
+    verifyInstallation.mockImplementationOnce(() => stale.promise);
+    const pending = service.reconcile('principal-a');
+    expect(service.disconnect('principal-a', '456')).toBe(true);
+    // Same millisecond: the rebound record repeats the old one's status, generation, and timestamps exactly.
+    await bind('principal-a');
+    expect(store.getInstallation('principal-a', '456')).toMatchObject({ generation: 1, createdAt: now, updatedAt: now });
+    stale.resolve(activeInstallation({ repositories: [{ owner: 'example', repository: 'stale-repo', contents: 'write' }] }));
+    await pending;
+    expect(store.getRepositoryGrant('principal-a', 'example', 'stale-repo')).toBeUndefined();
+    expect(store.getRepositoryGrant('principal-a', 'example', 'private-repo')).toMatchObject({ status: 'granted' });
+  });
+
+  it('changes a binding lifetime only on a committed bind or removal, never on another principal\'s no-op disconnect', async () => {
+    await bind('principal-a');
+    const lifetime = service.bindingLifetime('456');
+    expect(lifetime).toBeGreaterThan(0);
+    expect(service.disconnect('principal-b', '456')).toBe(false);
+    expect(service.disconnect('principal-a', '999')).toBe(false);
+    expect(service.bindingLifetime('456')).toBe(lifetime);
+    expect(service.bindingLifetime('999')).toBe(0);
+    expect(service.disconnect('principal-a', '456')).toBe(true);
+    expect(service.bindingLifetime('456')).toBe(lifetime + 1);
+  });
+
   it('records the granted permission levels and converges them on reconciliation', async () => {
     verifyInstallation.mockResolvedValueOnce(activeInstallation({ issues: 'read', pullRequests: 'none' }));
     await bind('principal-a');

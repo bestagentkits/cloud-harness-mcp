@@ -264,6 +264,14 @@ What to expect:
 - **Disconnect** revokes the saved token at GitHub and deletes it; it does not remove your authorization of the App on GitHub.
 - **Scope.** One saved authorization covers every repository the App is installed on and your account can access, for up to 8 hours per token. See the [security model](/security-model).
 
+## See every repository you can open
+
+The GitHub page's **All accessible repositories** section lists the repositories this identity can open: those of the installations connected to it and, once you connect your GitHub user, those of every installation of the App your account can reach (personal and organizations). While your GitHub user is connected, only repositories your own account can access are listed, and the access shown never exceeds yours. Each row shows `write permission` (what a push needs; branch protection can still refuse it) or `read`, and the lane that will be used. Opening the page shows the connected installations' last stored grants; **Refresh from GitHub** re-verifies them with GitHub. Long lists show 300 rows at a time with **Show more**. The list is a snapshot of at most 10,000 repositories; past that it is marked incomplete.
+
+Accounts under **No App installation you can reach covers these accounts** are your personal account or public organization memberships where no installation of the App gives you any repository. When the App is known to be installed there, the row says so: ask an owner of that account for repository access. Otherwise an **Install App** link appears when the operator set `GITHUB_APP_SLUG`. Public repositories still clone. GitHub does not show private organization memberships to the App, so such organizations never appear here.
+
+AI clients get the same list from the `github_repositories_list` tool; see the [tool reference](/reference/tools).
+
 ---
 
 ## Step 7: Verify Private Repository Access

@@ -45,9 +45,9 @@ See [Git and worktrees](git-and-worktrees.md).
 `git_fetch` `git_pull` `git_push` `git_merge` `git_rebase` `worktrees_list`
 `worktrees_create` `worktrees_remove` `github_action` `github_read`
 
-Creating a new organization repository (not workspace-bound):
-[GitHub repository bootstrap](github-repository-bootstrap.md) —
-`github_repository_create`.
+Repositories not bound to a workspace (discover or create):
+[GitHub repository discovery and bootstrap](github-repository-bootstrap.md) —
+`github_repositories_list` `github_repository_create`.
 
 ## Repository automation and memory
 

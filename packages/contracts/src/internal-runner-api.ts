@@ -209,7 +209,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'global_secret_list', 'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
-  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect',
+  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect', 'github_repository_list',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
   'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
@@ -371,6 +371,10 @@ const metadataInputs = {
   github_disconnect: z.object({ installationId: z.string().min(1).max(100) }).strict(),
   // Disconnects the principal's own GitHub user authorization. It names nothing: a principal has one.
   github_user_disconnect: z.object({}).strict(),
+  // The listing behind github_repositories_list. The dashboard GET reads with `sync: false` (stored
+  // installation grants, never rewritten); only its CSRF-protected refresh POST sends `sync: true`, which
+  // reconciles the bound installations and so rewrites their grants.
+  github_repository_list: z.object({ refresh: z.boolean().default(false), sync: z.boolean().default(false) }).strict(),
   privilege_grant_list: z.object({ workspaceId: WorkspaceIdSchema.optional() }).strict(),
   privilege_grant_approve: z.object({ grantId: z.string().min(1).max(128) }).strict(),
   privilege_grant_reject: z.object({ grantId: z.string().min(1).max(128) }).strict(),
@@ -687,7 +691,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('global_secret_list'), metadataRequest('global_secret_create'), metadataRequest('global_secret_rotate'), metadataRequest('global_secret_update'), metadataRequest('global_secret_delete'), metadataRequest('global_secret_bulk_apply'),
   metadataRequest('audit_list'), metadataRequest('artifact_list'), metadataRequest('artifact_snapshot'),
   metadataRequest('artifact_read'), metadataRequest('artifact_restore'), metadataRequest('artifact_delete'),
-  metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_authorize_begin'), metadataRequest('github_setup_complete'), metadataRequest('github_reconcile'), metadataRequest('github_disconnect'), metadataRequest('github_user_disconnect'),
+  metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_authorize_begin'), metadataRequest('github_setup_complete'), metadataRequest('github_reconcile'), metadataRequest('github_disconnect'), metadataRequest('github_user_disconnect'), metadataRequest('github_repository_list'),
   metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject'),
   metadataRequest('package_overview'), metadataRequest('package_plan_list'), metadataRequest('package_plan_approve'),
   metadataRequest('package_plan_reject'), metadataRequest('package_rollback'), metadataRequest('package_remove'),

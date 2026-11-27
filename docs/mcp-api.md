@@ -950,6 +950,85 @@ ChatGPT subscription (see
   retention window; retries within 24 hours replay the cached result or reject
   payload mismatches with `CONFLICT`, after which the key expires and the request
   executes anew.
+- `github_repositories_list` lists the GitHub repositories the principal can
+  open with `workspace_open`, across its personal account and organizations,
+  read live from GitHub. It is not bound to a workspace and is annotated
+  read-only. Input and result schemas are `GitHubRepositoriesListInputSchema`
+  and `GitHubRepositoriesListResultSchema` in
+  [`packages/contracts/src/github-repository-schemas.ts`](../packages/contracts/src/github-repository-schemas.ts);
+  the executable owner is
+  [`apps/runner/src/github-repository-lister.ts`](../apps/runner/src/github-repository-lister.ts).
+  - Lanes follow credential resolution order. In `cloudflare-access`/`oidc`
+    mode: the principal's bound installations first (`via: "installation"`;
+    each is reconciled with the App JWT, which also refreshes its stored
+    repository grants), then the installations of this App a `connected`
+    GitHub user can reach (`via: "user"`, from
+    `GET /user/installations/{id}/repositories`). A repository reached by both
+    lanes is reported once, on the installation lane, the credential the
+    runner uses. In `owner-bearer` mode only the operator-configured
+    installation is read (`userAuthorization: "not_applicable"`).
+  - While a GitHub user is `connected`, the listing is limited to what that
+    user can access: installation grants the user cannot see are dropped and
+    `access` is capped at the user's permission. When the user's access cannot
+    be read (outage, rate limit, keyring missing), nothing is listed, a warning
+    says why, and `incomplete` is true. Without a connected user (none,
+    `disconnected`, or `revoked` with a warning) the installation grants are
+    listed as they are. `access: "write"` is the credential permission
+    `git_push` needs, not a guarantee; a repository the user listing reports archived is `read`.
+  - `unreachableAccounts` names the connected user's own account and public
+    organization memberships (`GET /users/{login}/orgs`) that none of the
+    installations reachable by that user (from `GET /user/installations`, not
+    the principal's bindings) covers. `installation: "installed"` means the
+    principal has a binding of this App there, so the App is installed but the
+    user cannot access any of its repositories (ask an owner for access; no
+    `installUrl`).
+    `installation: "unknown"` carries `installUrl` when `GITHUB_APP_SLUG` is
+    set. A GitHub App user token cannot read private memberships
+    (`GET /user/orgs` answers it with an empty list), so an organization missing
+    from this list proves nothing, and no account is named when the user's
+    installation list could not be read completely. Public repositories there
+    still clone anonymously.
+  - Partial failure is reported, not raised: an installation that cannot be
+    refreshed keeps its stored grants (`accounts[].live: false`); a failing
+    later page of the user's installation list keeps the installations already
+    found; a SAML refusal or outage on one installation keeps the pages already
+    read; a primary or secondary rate limit, in any phase including the
+    installation list, stops every further request with that token; each
+    becomes a `warnings` entry and sets `incomplete`. The listing is a bounded
+    snapshot of at most 10,000 repositories, shared across installations; past
+    that `incomplete` is true and the cursor does not reach further. Only a
+    missing GitHub App returns `NOT_SUPPORTED`.
+  - The whole listing is cached per principal for 60 seconds, so paging
+    (`cursor`, `limit` 1-500) does not re-read GitHub; `refresh: true` bypasses
+    it. A cached or in-flight listing is reused only while the principal's
+    GitHub user authorization revision and every bound installation's revision
+    (status, generation, creation and last-write time, and a per-installation
+    binding lifetime counter that every bind and Disconnect advances, so a
+    disconnect and rebind is never mistaken for the same binding) are unchanged. A listing is
+    returned or cached only if the revisions it actually used (after its own
+    reconciles, and the user generation it read with after any renewal) still
+    match the store when it ends; otherwise it is read once more, then fails
+    `UNAVAILABLE` (retryable). Overlapping requests share one read and accept
+    it only if that end state is still current, and the cache only moves to a
+    later-started read, so a slow older read never replaces a newer refresh.
+    The user lane's answer is also discarded when the authorization changed
+    while it was read. A reconcile
+    writes only over the exact installation record it read; when that record
+    changed meanwhile it verifies the current binding once more (a binding that
+    is gone is skipped, never recreated) and otherwise fails `UNAVAILABLE`.
+    `owner` and `query` filter before paging; owners include Enterprise Managed
+    User logins (`developer_company`). No token is returned or minted for
+    the caller.
+  - The Dashboard GitHub page reads the listing with
+    `GET /dashboard/api/v1/github/repositories`, which writes nothing: it never
+    reconciles (stored installation grants, `synced: false`) and never renews
+    or revokes the user token (a token due for renewal reads as a warning). The
+    page syncs only when the person clicks **Refresh from GitHub**, with the CSRF-protected
+    `POST /dashboard/api/v1/github/repositories/refresh` (`{ "refresh": boolean }`),
+    which may reconcile and renew; the page discards that response and refetches
+    the `GET`, so an answer delayed past a disconnect is never shown. The BFF
+    validates the listing against `GitHubRepositoryListingSchema` before
+    projecting it.
 - `github_repository_create` creates a repository owned by a GitHub
   organization. It is not bound to a workspace (it takes no `workspaceId`), and
   `workspace_open` never creates a repository: a clone `404` may mean the
@@ -1219,7 +1298,7 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
 2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
 3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
-4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `github_repository_create` (`NOT_SUPPORTED`), `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
+4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `github_repository_create` and `github_repositories_list` (`NOT_SUPPORTED`), `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
 5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 
 ### Local multi-workspace mode

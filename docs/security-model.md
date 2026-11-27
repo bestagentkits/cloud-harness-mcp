@@ -793,6 +793,30 @@ error code). The executable owner is
 with evidence in
 [`apps/runner/test/github-repository-creator.test.ts`](../apps/runner/test/github-repository-creator.test.ts).
 
+Repository listing (`github_repositories_list`, and the Dashboard's
+`/dashboard/api/v1/github/repositories` routes) reads only through credentials
+the principal already holds: its bound installations and, for a `connected`
+GitHub user, that user's own token, used in-process for `GET /user/installations`,
+`GET /user/installations/{id}/repositories`, and `GET /users/{login}/orgs`. While
+a user is connected the result is limited to that user's access. Reconciling
+the bound installations rewrites only that principal's grants; the MCP tool
+does it on each uncached call, while the Dashboard's `GET` writes nothing (no
+reconcile, no token renewal or revocation) and only its CSRF-protected
+`POST .../refresh` may. A reconcile stores GitHub's answer only over the exact
+binding it read (record status, generation, creation and last-write time, plus a
+process-local binding lifetime counter that every bind and Disconnect advances),
+so a binding disconnected or rebound meanwhile, even within one millisecond, is
+never recreated or overwritten.
+Cached and in-flight listings are keyed by the same revisions plus the user
+authorization generation, a listing is published only if the revisions it used
+still match when it ends, and a user-lane answer is dropped if the
+authorization changed while it was read, so a disconnect, reconnect as another
+account, or rebind never serves the previous account's repository names. No token, operator
+fallback credential, or other principal's installation is used, returned, or
+projected; the BFF validates the listing against its strict schema before it
+reaches the browser. The executable owner is
+[`apps/runner/src/github-repository-lister.ts`](../apps/runner/src/github-repository-lister.ts).
+
 All write mutations and token authorization denials emit auditable events (`github_action.<action>`) into `audit_events` recording principal, repository, target entity numbers, success status, and structured error codes without storing token secrets or unbounded request payloads. Helper execution failures are classified into structured, typed error codes (`GITHUB_RATE_LIMITED` with retryAfterMs, `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`, and the review/merge codes documented in `docs/mcp-api.md`) to provide deterministic machine-readable recovery semantics for autonomous agents.
 
 ### Three-zone storage and toolchain isolation

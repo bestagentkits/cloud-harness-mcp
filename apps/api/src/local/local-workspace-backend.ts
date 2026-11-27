@@ -11,6 +11,7 @@ import { LocalOperationManager } from './local-operation-manager.js';
 const opaqueId = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
 
 const REPOSITORY_CREATE_UNSUPPORTED = 'github_repository_create is unsupported in local mode because it needs the remote runner\'s GitHub App broker; use the remote MCP endpoint';
+const REPOSITORIES_LIST_UNSUPPORTED = 'github_repositories_list is unsupported in local mode because it needs the remote runner\'s GitHub App broker; use the remote MCP endpoint';
 
 /** Local mode has no GitHub App broker, so repository creation is never available. */
 const LOCAL_REPOSITORY_CREATE_CAPABILITY: GitHubRepositoryCreateCapability = {
@@ -205,6 +206,14 @@ export class LocalWorkspaceBackend implements OperationBackend {
         ok: false,
         message: REPOSITORY_CREATE_UNSUPPORTED,
         error: { code: 'NOT_SUPPORTED', message: REPOSITORY_CREATE_UNSUPPORTED, retryable: false, operation },
+        truncated: false
+      };
+    }
+    if (operation === 'github_repositories_list') {
+      return {
+        ok: false,
+        message: REPOSITORIES_LIST_UNSUPPORTED,
+        error: { code: 'NOT_SUPPORTED', message: REPOSITORIES_LIST_UNSUPPORTED, retryable: false, operation },
         truncated: false
       };
     }

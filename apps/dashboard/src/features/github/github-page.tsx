@@ -10,7 +10,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/toast-store';
-import { bffPrefix, mutationErrorText } from '@/lib/bff-mutation';
+import { mutationErrorText } from '@/lib/bff-mutation';
 import { Callout } from '../shared/callout';
 import { usePageData } from '../shared/feature-read';
 import { formatTime } from '../shared/format';
@@ -18,7 +18,8 @@ import { reportActionError } from '../shared/report-error';
 import { Section } from '../shared/section';
 import { StatusBadge } from '../shared/status-badge';
 import { hasGitHubCallbackParams } from './github-callback-search';
-import { accountOf, classifyGitHubCallback, type GitHubCallback, type GitHubInstallation, type GitHubStatus, githubApi, githubCallbackErrorText, GITHUB_READS, installationsOf, userAuthorizationReasonText, userAuthorizationState, userAuthorizationUnavailable } from './github-model';
+import { GitHubRepositoriesSection } from './github-repositories-section';
+import { accountOf, classifyGitHubCallback, type GitHubCallback, type GitHubInstallation, type GitHubStatus, githubApi, githubCallbackErrorText, installationsOf, refetchGitHubReads, userAuthorizationReasonText, userAuthorizationState, userAuthorizationUnavailable } from './github-model';
 import { ForbiddenError } from '@/lib/api-client';
 
 /** One-time callbacks already acted on in this document, so a re-render or StrictMode never replays one. */
@@ -107,7 +108,8 @@ function useGitHubCallback(search: string) {
           setFailure({ title: callback.kind === 'complete' ? 'The GitHub connection could not be completed.' : 'GitHub authorization could not be started.', message: githubCallbackErrorText(error) });
         }
       }
-      await queryClient.invalidateQueries({ queryKey: bffPrefix('/github') });
+      // A completed connection changes both reads: the status and the repositories it reaches.
+      await refetchGitHubReads(queryClient);
       setBusy(false);
     })();
   }, [callback, queryClient]);
@@ -272,7 +274,7 @@ export function GitHubPage({ search = '' }: { search?: string }) {
   const read = usePageData<GitHubStatus>('github');
   const [reconciling, setReconciling] = useState<string | undefined>();
   const [disconnecting, setDisconnecting] = useState<GitHubInstallation | undefined>();
-  const refresh = useCallback(() => Promise.all(GITHUB_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffPrefix(path) }))), [queryClient]);
+  const refresh = useCallback(() => refetchGitHubReads(queryClient), [queryClient]);
 
   const reconcile = useCallback(async (installationId?: string) => {
     const key = installationId ?? '*';
@@ -363,6 +365,7 @@ export function GitHubPage({ search = '' }: { search?: string }) {
                   </ul>
                 ) : <p className="text-sm text-muted-foreground">No authorized repositories reported.</p>}
               </Section>
+              <GitHubRepositoriesSection />
             </>
           );
         }}

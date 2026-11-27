@@ -48,6 +48,7 @@ export function fakeAuthorizer(overrides: Partial<GitHubUserAuthorizer> = {}) {
     refresh: vi.fn(),
     revoke: vi.fn(async () => undefined),
     userInstallationOwners: vi.fn(async () => new Set<string>(['acme'])),
+    userRepositoryListing: vi.fn(async () => ({ installations: [], organizations: [], organizationsComplete: true, installationsComplete: true, complete: true })),
     ...overrides
   };
 }

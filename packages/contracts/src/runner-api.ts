@@ -21,7 +21,7 @@ export const RunnerOperationSchema = z.enum([
   'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
   'deployments_list', 'deployments_run',
   'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
-  'github_action', 'github_read', 'github_repository_create',
+  'github_action', 'github_read', 'github_repository_create', 'github_repositories_list',
   'secrets_list',
   'packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',

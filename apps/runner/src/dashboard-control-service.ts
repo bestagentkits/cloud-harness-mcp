@@ -472,6 +472,8 @@ export class DashboardControlService {
           await this.requireGitHubBinding().disconnectUser(principalId);
           return ok('GitHub user disconnected', this.githubStatus(principalId));
         }
+        case 'github_repository_list':
+          return ok('GitHub repositories listed', await this.workspaces.repositoryLister.listing(principalId, parsed.input));
         case 'privilege_grant_list': {
           return ok('Privilege grants listed', {
             grants: this.principals.listPrivilegeGrants(principalId, parsed.input.workspaceId)

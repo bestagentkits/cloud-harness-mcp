@@ -158,3 +158,138 @@ describe('GitHub App user authorization', () => {
     }
   });
 });
+
+describe('GitHub user repository listing', () => {
+  const listingRoutes = (overrides: Record<string, Route> = {}) => ({
+    'GET /user/installations?per_page=100&page=1': { body: { total_count: 3, installations: [
+      { ...installation(456, { id: 789, login: 'alice', type: 'User' }), permissions: { contents: 'write' } },
+      { ...installation(900, { id: 901, login: 'acme', type: 'Organization' }), permissions: { contents: 'read' } },
+      { ...installation(999, { id: 902, login: 'other-app', type: 'Organization' }, 555), permissions: { contents: 'write' } }
+    ] } },
+    'GET /user/installations/456/repositories?per_page=100&page=1': { body: { total_count: 3, repositories: [
+      { name: 'notes', owner: { login: 'alice' }, private: true, archived: false, default_branch: 'main', permissions: { push: true, pull: true } },
+      { name: 'old', owner: { login: 'alice' }, archived: true, permissions: { push: true, pull: true } },
+      { name: 'hidden', owner: { login: 'alice' }, permissions: { push: false, pull: false } }
+    ] } },
+    'GET /user/installations/900/repositories?per_page=100&page=1': { body: { total_count: 1, repositories: [
+      { name: 'service', owner: { login: 'acme' }, private: false, permissions: { push: true, pull: true } }
+    ] } },
+    'GET /users/alice/orgs?per_page=100&page=1': { body: [{ login: 'acme' }, { login: 'globex' }] },
+    ...overrides
+  });
+
+  it('lists this App\'s installations, capping access at the installation Contents level and archived state', async () => {
+    const listing = await github(listingRoutes()).authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(listing.complete).toBe(true);
+    expect(listing.organizations).toEqual(['acme', 'globex']);
+    expect(listing.installations.map((entry) => entry.installationId)).toEqual(['456', '900']);
+    expect(listing.installations[0]!.repositories).toEqual([
+      { owner: 'alice', name: 'notes', access: 'write', private: true, archived: false, defaultBranch: 'main' },
+      { owner: 'alice', name: 'old', access: 'read', archived: true }
+    ]);
+    // The user may push, but the installation grants Contents: read, so git can only read.
+    expect(listing.installations[1]!.repositories).toEqual([{ owner: 'acme', name: 'service', access: 'read', private: false }]);
+  });
+
+  it('keeps every page already read when a later request fails, and marks the listing incomplete', async () => {
+    const listing = await github(listingRoutes({
+      'GET /user/installations/900/repositories?per_page=100&page=1': { status: 503, body: {} },
+      'GET /users/alice/orgs?per_page=100&page=1': { status: 503, body: {} }
+    })).authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(listing.installations[0]!.repositories).toHaveLength(2);
+    expect(listing.installations[1]).toMatchObject({ accountLogin: 'acme', repositories: [], complete: false });
+    expect(listing.complete).toBe(false);
+    expect(listing.organizations).toBeUndefined();
+  });
+
+  it('reports a SAML refusal per organization and stops requesting after a rate limit', async () => {
+    const saml = await github(listingRoutes({
+      'GET /user/installations/456/repositories?per_page=100&page=1': { status: 403, body: { message: 'Resource protected by organization SAML enforcement' } }
+    })).authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(saml.installations[0]!.failure).toContain('https://github.com/orgs/alice/sso');
+    expect(saml.installations[1]!.repositories).toHaveLength(1);
+
+    const { authorizer, calls } = github(listingRoutes({
+      'GET /user/installations/456/repositories?per_page=100&page=1': { status: 403, body: {}, headers: { 'x-ratelimit-remaining': '0' } }
+    }));
+    const limited = await authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(limited.complete).toBe(false);
+    expect(limited.installations[1]!.failure).toContain('not listed');
+    expect(calls.some((call) => call.key.includes('/installations/900/'))).toBe(false);
+  });
+
+  it('reports a rejected token so the caller can renew it', async () => {
+    await expect(github(listingRoutes({ 'GET /user/installations?per_page=100&page=1': { status: 401, body: {} } })).authorizer.userRepositoryListing(TOKEN, 'alice'))
+      .rejects.toMatchObject({ name: 'GitHubUserTokenRejectedError' });
+  });
+
+  it('reads one installation past 5,000 repositories, stopping only at the shared 10,000 budget', async () => {
+    const pages = (count: number) => Object.fromEntries(Array.from({ length: Math.ceil(count / 100) }, (_, index) => [
+      `GET /user/installations/456/repositories?per_page=100&page=${index + 1}`,
+      { body: { total_count: count, repositories: Array.from({ length: Math.min(100, count - index * 100) }, (_, offset) => (
+        { name: `r${index * 100 + offset}`, owner: { login: 'alice' }, permissions: { push: false, pull: true } }
+      )) } }
+    ]));
+    const single = { 'GET /user/installations?per_page=100&page=1': { body: { total_count: 1, installations: [
+      { ...installation(456, { id: 789, login: 'alice', type: 'User' }), permissions: { contents: 'read' } }
+    ] } }, 'GET /users/alice/orgs?per_page=100&page=1': { body: [] } };
+
+    const above = await github({ ...single, ...pages(5_001) }).authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(above.installations[0]!.repositories).toHaveLength(5_001);
+    expect(above.complete).toBe(true);
+
+    const beyond = await github({ ...single, ...pages(10_050) }).authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(beyond.installations[0]!.repositories).toHaveLength(10_000);
+    expect(beyond.complete).toBe(false);
+  });
+
+  it('keeps installations already discovered when a later discovery page fails, and gives no completeness claim', async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({ ...installation(1_000 + index, { id: 2_000 + index, login: `org${index}`, type: 'Organization' }), permissions: { contents: 'none' } }));
+    const listing = await github({
+      'GET /user/installations?per_page=100&page=1': { body: { total_count: 150, installations: first } },
+      'GET /user/installations?per_page=100&page=2': { status: 502, body: {} },
+      'GET /users/alice/orgs?per_page=100&page=1': { body: [] }
+    }).authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(listing.installations).toHaveLength(100);
+    expect(listing).toMatchObject({ installationsComplete: false, complete: false });
+  });
+
+  it('stops every further request when a later discovery page is rate-limited', async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({ ...installation(1_000 + index, { id: 2_000 + index, login: `org${index}`, type: 'Organization' }), permissions: { contents: 'read' } }));
+    for (const limited of [
+      { status: 429, body: {} },
+      { status: 403, body: { message: 'You have exceeded a secondary rate limit.' } }
+    ]) {
+      const { authorizer, calls } = github({
+        'GET /user/installations?per_page=100&page=1': { body: { total_count: 150, installations: first } },
+        'GET /user/installations?per_page=100&page=2': limited
+      });
+      const listing = await authorizer.userRepositoryListing(TOKEN, 'alice');
+      expect(listing.installations).toHaveLength(100);
+      expect(listing.installations.every((entry) => entry.failure?.startsWith('not listed'))).toBe(true);
+      expect(listing).toMatchObject({ installationsComplete: false, complete: false, organizations: undefined });
+      expect(calls.map((call) => call.key)).toEqual(['GET /user/installations?per_page=100&page=1', 'GET /user/installations?per_page=100&page=2']);
+    }
+  });
+
+  it('keeps membership pages already read when a later page is rate-limited, and says the list is partial', async () => {
+    const orgs = Array.from({ length: 100 }, (_, index) => ({ login: `org${index}` }));
+    const listing = await github(listingRoutes({
+      'GET /users/alice/orgs?per_page=100&page=1': { body: orgs },
+      'GET /users/alice/orgs?per_page=100&page=2': { status: 429, body: {} }
+    })).authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(listing.organizations).toHaveLength(100);
+    expect(listing.organizationsComplete).toBe(false);
+    expect(listing.installations[0]!.repositories).toHaveLength(2);
+  });
+
+  it('treats a secondary rate limit as a rate limit and stops requesting', async () => {
+    const { authorizer, calls } = github(listingRoutes({
+      'GET /user/installations/456/repositories?per_page=100&page=1': { status: 403, body: { message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' } }
+    }));
+    const listing = await authorizer.userRepositoryListing(TOKEN, 'alice');
+    expect(listing.installations[0]!.failure).not.toContain('sso');
+    expect(listing.installations[1]!.failure).toContain('not listed');
+    expect(calls.some((call) => call.key.includes('/installations/900/'))).toBe(false);
+  });
+});

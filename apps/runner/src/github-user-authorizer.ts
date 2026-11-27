@@ -31,6 +31,44 @@ export type GitHubUserTokenRefresh =
   | { status: 'refreshed'; accessToken: string; refreshToken: string; accessExpiresAt: number; refreshExpiresAt: number }
   | { status: 'revoked'; reasonCode: 'bad_refresh_token' };
 
+/** One repository a GitHub user token reaches through an installation of this App. */
+export type GitHubUserRepository = {
+  owner: string;
+  name: string;
+  /** `write` only when the user may push and the installation grants Contents: write. */
+  access: 'read' | 'write';
+  private?: boolean;
+  archived?: boolean;
+  defaultBranch?: string;
+};
+
+/** One installation of this App the user can reach, with the repositories of it the user can access. */
+export type GitHubUserInstallationRepositories = {
+  installationId: string;
+  accountLogin: string;
+  accountType: 'Organization' | 'User' | null;
+  repositories: GitHubUserRepository[];
+  /** False when a listing bound stopped before every repository was read. */
+  complete: boolean;
+  /** Why GitHub refused this installation's repositories (for example SAML SSO); the others still list. */
+  failure?: string;
+};
+
+/**
+ * What a user token reaches: the installations of this App and their repositories, plus the user's
+ * public organization memberships (`undefined` when GitHub could not list them). A GitHub App user token
+ * cannot read private memberships: `GET /user/orgs` answers an empty list for it.
+ */
+export type GitHubUserRepositoryListing = {
+  installations: GitHubUserInstallationRepositories[];
+  organizations: string[] | undefined;
+  /** False when the membership list stopped early (failure, rate limit, or bound): `organizations` is partial. */
+  organizationsComplete: boolean;
+  /** False when the installation list itself stopped at its bound, so an unlisted account proves nothing. */
+  installationsComplete: boolean;
+  complete: boolean;
+};
+
 /**
  * GitHub answered 401 for a user access token: it expired, a refresh rotated it, or the person revoked
  * the App. This alone proves none of them, so it never revokes anything; the caller refreshes to find out.
@@ -72,6 +110,14 @@ export interface GitHubUserAuthorizer {
    * a retryable error on a rate limit or outage.
    */
   userInstallationOwners(accessToken: string): Promise<ReadonlySet<string>>;
+  /**
+   * Every installation of this App the user token reaches (`GET /user/installations`), the repositories of
+   * each the user can access (`GET /user/installations/{id}/repositories`), and the user's public
+   * organization memberships (`GET /users/{login}/orgs`, best effort). Bounded. Throws
+   * `GitHubUserTokenRejectedError` on 401; any other failure after the installation list keeps the pages
+   * already read and marks the listing incomplete.
+   */
+  userRepositoryListing(accessToken: string, login: string): Promise<GitHubUserRepositoryListing>;
 }
 
 type GitHubAppCredentials = Pick<NonNullable<RunnerConfig['githubApp']>, 'appId'> & { clientId: string; clientSecret: string };
@@ -94,6 +140,22 @@ type MembershipPayload = { state?: unknown; role?: unknown };
 const PAGE_SIZE = 100;
 const MAX_PAGES = 10;
 const REVOKE_TIMEOUT_MS = 5_000;
+/** The listing's shared budget; past it the listing reports itself incomplete instead of failing. */
+const MAX_LISTED_REPOSITORIES = 10_000;
+const LISTING_TIMEOUT_MS = 60_000;
+
+type UserInstallationListPayload = {
+  total_count?: unknown;
+  installations?: Array<{ id?: unknown; app_id?: unknown; account?: { login?: unknown; type?: unknown } | null; permissions?: Record<string, unknown> | null }>;
+};
+type UserRepositoriesPayload = {
+  total_count?: unknown;
+  repositories?: Array<{
+    name?: unknown; owner?: { login?: unknown } | null; private?: unknown; archived?: unknown; default_branch?: unknown;
+    permissions?: { push?: unknown; pull?: unknown } | null;
+  }>;
+};
+type OrganizationPayload = Array<{ login?: unknown }>;
 
 export class GitHubApiUserAuthorizer implements GitHubUserAuthorizer {
   constructor(
@@ -286,6 +348,179 @@ export class GitHubApiUserAuthorizer implements GitHubUserAuthorizer {
     return owners;
   }
 
+  async userRepositoryListing(accessToken: string, login: string): Promise<GitHubUserRepositoryListing> {
+    const deadline = this.now() + LISTING_TIMEOUT_MS;
+    const installations: Array<{ id: string; login: string; type: 'Organization' | 'User' | null; contents: unknown }> = [];
+    let seen = 0;
+    let complete = true;
+    let installationsComplete = true;
+    // Set once GitHub rate-limits or the deadline passes: nothing more is requested with this token, and later
+    // installations are reported as not listed.
+    let stopped: string | undefined;
+    for (let page = 1; ; page += 1) {
+      if (page > MAX_PAGES) { complete = false; installationsComplete = false; break; }
+      let payload: UserInstallationListPayload;
+      try {
+        const response = await this.userGet(`/user/installations?per_page=${PAGE_SIZE}&page=${page}`, accessToken, deadline);
+        if (!response.ok) throw unavailable();
+        payload = await this.json<UserInstallationListPayload>(response, deadline);
+        if (typeof payload.total_count !== 'number' || !Array.isArray(payload.installations)) throw invalidProviderResponse();
+      } catch (error) {
+        // Nothing is known before the first page; after it, the installations already found still list.
+        if (page === 1 || error instanceof GitHubUserTokenRejectedError) throw error;
+        complete = false;
+        installationsComplete = false;
+        if (stopsRequests(error)) stopped = (error as HarnessError).message;
+        break;
+      }
+      for (const installation of payload.installations ?? []) {
+        const account = installation.account;
+        if (!isId(installation.id) || !isId(installation.app_id) || String(installation.app_id) !== String(this.githubApp.appId)) continue;
+        if (!account || typeof account.login !== 'string' || !account.login) continue;
+        installations.push({
+          id: String(installation.id),
+          login: account.login,
+          type: account.type === 'Organization' || account.type === 'User' ? account.type : null,
+          contents: installation.permissions?.contents
+        });
+      }
+      const count = payload.installations?.length ?? 0;
+      seen += count;
+      if (seen >= Number(payload.total_count) || count < PAGE_SIZE) break;
+    }
+
+    const listed: GitHubUserInstallationRepositories[] = [];
+    let total = 0;
+    for (const installation of installations) {
+      const entry: GitHubUserInstallationRepositories = {
+        installationId: installation.id, accountLogin: installation.login, accountType: installation.type, repositories: [], complete: true
+      };
+      listed.push(entry);
+      // Without Contents the installation's tokens cannot read through git, so it opens nothing.
+      if (installation.contents !== 'read' && installation.contents !== 'write') {
+        entry.failure = 'the GitHub App installation lacks the Contents permission';
+        continue;
+      }
+      if (stopped !== undefined) {
+        entry.failure = `not listed: ${stopped}`;
+        entry.complete = false;
+        complete = false;
+        continue;
+      }
+      try {
+        await this.readInstallationRepositories(accessToken, installation, entry, deadline, () => total, () => { total += 1; });
+      } catch (error) {
+        if (error instanceof GitHubUserTokenRejectedError) throw error;
+        // The pages already read stay: a late outage must not erase what GitHub already answered.
+        const reason = error instanceof HarnessError ? error.message : 'GitHub could not be read';
+        entry.failure = `listing stopped early: ${reason}`;
+        entry.complete = false;
+        if (error instanceof HarnessError && (error.code === 'GITHUB_RATE_LIMITED' || error.code === 'TIMEOUT')) stopped = reason;
+      }
+      if (!entry.complete) complete = false;
+    }
+
+    const memberships = stopped === undefined ? await this.publicOrganizations(accessToken, login, deadline) : { organizations: undefined, complete: false };
+    return { installations: listed, organizations: memberships.organizations, organizationsComplete: memberships.complete, installationsComplete, complete };
+  }
+
+  /** Reads one installation's repositories into `entry`, page by page, until done or a bound. */
+  private async readInstallationRepositories(
+    accessToken: string,
+    installation: { id: string; login: string; contents: unknown },
+    entry: GitHubUserInstallationRepositories,
+    deadline: number,
+    total: () => number,
+    counted: () => void
+  ): Promise<void> {
+    let read = 0;
+    for (let page = 1; ; page += 1) {
+      if (total() >= MAX_LISTED_REPOSITORIES) {
+        entry.complete = false;
+        entry.failure = 'the repository listing stopped at its bound';
+        return;
+      }
+      const response = await this.userGet(`/user/installations/${encodeURIComponent(installation.id)}/repositories?per_page=${PAGE_SIZE}&page=${page}`, accessToken, deadline);
+      if (response.status === 403 || response.status === 404) {
+        await response.body?.cancel();
+        // SAML SSO and similar refusals are per organization: the other installations still list.
+        entry.failure = response.status === 403
+          ? `GitHub refused the repositories of ${installation.login}; if the organization enforces SAML SSO, authorize at https://github.com/orgs/${installation.login}/sso`
+          : `GitHub no longer shows installation ${installation.id} to this user`;
+        entry.complete = false;
+        return;
+      }
+      if (!response.ok) throw unavailable();
+      const payload = await this.json<UserRepositoriesPayload>(response, deadline);
+      if (typeof payload.total_count !== 'number' || !Array.isArray(payload.repositories)) throw invalidProviderResponse();
+      for (const repository of payload.repositories) {
+        if (typeof repository.name !== 'string' || !repository.name || typeof repository.owner?.login !== 'string' || !repository.owner.login) {
+          throw invalidProviderResponse();
+        }
+        if (repository.permissions?.pull === false) continue;
+        const archived = repository.archived === true;
+        entry.repositories.push({
+          owner: repository.owner.login,
+          name: repository.name,
+          // An archived repository refuses every push, whatever the permission says.
+          access: repository.permissions?.push === true && installation.contents === 'write' && !archived ? 'write' : 'read',
+          ...(typeof repository.private === 'boolean' ? { private: repository.private } : {}),
+          ...(typeof repository.archived === 'boolean' ? { archived: repository.archived } : {}),
+          ...(typeof repository.default_branch === 'string' && repository.default_branch ? { defaultBranch: repository.default_branch } : {})
+        });
+        counted();
+      }
+      read += payload.repositories.length;
+      if (read >= payload.total_count || payload.repositories.length < PAGE_SIZE) return;
+    }
+  }
+
+  /**
+   * The user's public organization memberships, or `undefined` when GitHub could not list them. A GitHub
+   * App user token gets an empty answer from `GET /user/orgs`, so private memberships cannot be learned.
+   */
+  private async publicOrganizations(accessToken: string, login: string, deadline: number): Promise<{ organizations: string[] | undefined; complete: boolean }> {
+    const organizations: string[] = [];
+    // Pages already read stay: they are verified memberships whatever happens to the next page.
+    const partial = () => ({ organizations: organizations.length ? organizations : undefined, complete: false });
+    try {
+      for (let page = 1; page <= MAX_PAGES; page += 1) {
+        const response = await this.userGet(`/users/${encodeURIComponent(login)}/orgs?per_page=${PAGE_SIZE}&page=${page}`, accessToken, deadline);
+        if (!response.ok) {
+          await response.body?.cancel();
+          return partial();
+        }
+        const payload = await this.json<OrganizationPayload>(response, deadline);
+        if (!Array.isArray(payload)) return partial();
+        for (const organization of payload) {
+          if (typeof organization.login === 'string' && organization.login) organizations.push(organization.login);
+        }
+        if (payload.length < PAGE_SIZE) return { organizations, complete: true };
+      }
+    } catch (error) {
+      if (error instanceof GitHubUserTokenRejectedError) throw error;
+      // Optional: a failure here never discards the repositories already read.
+      return partial();
+    }
+    return partial();
+  }
+
+  /** A user-token GET that classifies a rejected token and a rate limit; every other status is the caller's. */
+  private async userGet(path: string, accessToken: string, deadline: number): Promise<Response> {
+    const response = await this.send(new URL(path, 'https://api.github.com').toString(), {
+      headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${accessToken}`, 'x-github-api-version': '2022-11-28' }
+    }, deadline);
+    if (response.status === 401) {
+      await response.body?.cancel();
+      throw new GitHubUserTokenRejectedError();
+    }
+    if (response.status === 429 || (response.status === 403 && (isRateLimited(response) || await isSecondaryRateLimit(response)))) {
+      await response.body?.cancel();
+      throw new HarnessError('GITHUB_RATE_LIMITED', 'GitHub rate limit reached for the connected GitHub user. Retry later.', 429, true);
+    }
+    return response;
+  }
+
   private async postToken(body: Record<string, string>, deadline: number): Promise<TokenPayload> {
     const response = await this.send('https://github.com/login/oauth/access_token', {
       method: 'POST',
@@ -371,6 +606,23 @@ export class GitHubApiUserAuthorizer implements GitHubUserAuthorizer {
 
 function isRateLimited(response: Response): boolean {
   return response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after');
+}
+
+/**
+ * GitHub's secondary (abuse) limits answer 403 without `Retry-After` or an exhausted quota; only the documented
+ * message tells them apart from a permission or SSO refusal. The body is inspected, never echoed.
+ */
+async function isSecondaryRateLimit(response: Response): Promise<boolean> {
+  try {
+    return /secondary rate limit|abuse detection/i.test((await response.clone().text()).slice(0, 2_000));
+  } catch {
+    return false;
+  }
+}
+
+/** A rate limit or an exhausted deadline: no further request with this token can succeed now. */
+function stopsRequests(error: unknown): boolean {
+  return error instanceof HarnessError && (error.code === 'GITHUB_RATE_LIMITED' || error.code === 'TIMEOUT');
 }
 
 function isId(value: unknown): value is number | string {
