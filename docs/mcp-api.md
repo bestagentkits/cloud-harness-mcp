@@ -1023,7 +1023,7 @@ ChatGPT subscription (see
     `GET /dashboard/api/v1/github/repositories`, which writes nothing: it never
     reconciles (stored installation grants, `synced: false`) and never renews
     or revokes the user token (a token due for renewal reads as a warning). The
-    page then syncs once per visit and on **Refresh** with the CSRF-protected
+    page syncs only when the person clicks **Refresh from GitHub**, with the CSRF-protected
     `POST /dashboard/api/v1/github/repositories/refresh` (`{ "refresh": boolean }`),
     which may reconcile and renew; the page discards that response and refetches
     the `GET`, so an answer delayed past a disconnect is never shown. The BFF

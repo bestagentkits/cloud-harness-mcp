@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { AsyncStatus } from '@/components/feedback/async-status';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -48,14 +48,13 @@ export function GitHubRepositoriesSection() {
   const [refreshing, setRefreshing] = useState(false);
 
   // Refreshing reconciles the bound installations, which rewrites their stored grants, so it is a CSRF-protected
-  // POST. `force` bypasses the runner's cache; the automatic sync on load reuses a fresh synced listing. The POST
-  // answer is never shown: a response that arrives after a Disconnect could carry the previous connection's names,
-  // so the page refetches the read, which the runner answers for the connection as it is now (and cancels any
-  // read still in flight).
-  const sync = useCallback(async (force: boolean) => {
+  // POST that only the person's click sends: opening the page never writes. The POST answer is never shown: a
+  // response that arrives after a Disconnect could carry the previous connection's names, so the page refetches
+  // the read, which the runner answers for the connection as it is now (and cancels any read still in flight).
+  const sync = useCallback(async () => {
     setRefreshing(true);
     try {
-      await apiClient.request<unknown>(`${PATH}/refresh`, { method: 'POST', body: { refresh: force } });
+      await apiClient.request<unknown>(`${PATH}/refresh`, { method: 'POST', body: { refresh: true } });
       // Cancels a read still in flight before refetching; the bound installations were re-verified too.
       await refetchGitHubReads(queryClient, [PATH, '/github']);
     } catch (error) {
@@ -65,21 +64,12 @@ export function GitHubRepositoriesSection() {
     }
   }, [queryClient]);
 
-  // The read lists stored installation grants; bring them up to date from GitHub once per visit.
-  const autoSynced = useRef(false);
-  const needsSync = read.data !== undefined && read.data.synced !== true;
-  useEffect(() => {
-    if (!needsSync || autoSynced.current) return;
-    autoSynced.current = true;
-    void sync(false);
-  }, [needsSync, sync]);
-
   return (
     <Section
       title="All accessible repositories"
       description="Read live from GitHub across your personal account and every organization this App can reach for you."
       testId="github-all-repositories"
-      actions={<Button size="sm" variant="outline" disabled={refreshing} aria-busy={refreshing || undefined} onClick={() => { void sync(true); }}>{refreshing ? 'Refreshing…' : 'Refresh from GitHub'}</Button>}
+      actions={<Button size="sm" variant="outline" disabled={refreshing} aria-busy={refreshing || undefined} onClick={() => { void sync(); }}>{refreshing ? 'Refreshing…' : 'Refresh from GitHub'}</Button>}
     >
       <AsyncStatus query={read} label="GitHub repositories">
         {(listing) => {

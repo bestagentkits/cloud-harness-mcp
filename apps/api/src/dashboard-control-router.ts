@@ -229,8 +229,8 @@ export function registerDashboardControlRoutes(
   router.get('/api/v1/github', endpoint('github_status', () => ({})));
   // The read never reconciles: it lists the stored installation grants and the connected user's live access.
   router.get('/api/v1/github/repositories', endpoint('github_repository_list', () => ({ refresh: false, sync: false })));
-  // Reconciling rewrites stored grants, so it is a mutation: POST, behind the session and CSRF checks. The page
-  // sends it once on load (`refresh: false`, served from a fresh synced listing when one exists) and on Refresh.
+  // Reconciling rewrites stored grants, so it is a mutation: POST, behind the session and CSRF checks. Only the
+  // page's Refresh button sends it; opening the page never writes.
   router.post('/api/v1/github/repositories/refresh', endpoint('github_repository_list', (request) => ({
     refresh: githubRepositoriesRefreshBody.parse(request.body ?? {}).refresh, sync: true
   })));
